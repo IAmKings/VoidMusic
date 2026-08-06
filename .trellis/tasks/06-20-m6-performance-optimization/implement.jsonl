@@ -1,0 +1,12 @@
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/prd.md", "reason": "Requirements, acceptance criteria, priority ordering"}
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/design.md", "reason": "Technical architecture decisions, tradeoffs, data flow"}
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/implement.md", "reason": "Ordered implementation checklist with validation gates"}
+{"file": "app/build.gradle.kts", "reason": "Build config: NDK enable, minification, ABI filters, packaging excludes"}
+{"file": "app/src/main/cpp/drumengine.cpp", "reason": "Oboe native engine source; already correct, just needs build enabled"}
+{"file": "app/src/main/cpp/CMakeLists.txt", "reason": "CMake config for native build"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/audio/DrumEngine.kt", "reason": "Kotlin audio interface; needs AudioTrack fallback branch"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/persistence/Settings.kt", "reason": "PerformanceLevel enum and DataStore wiring; source of truth for tier"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/camera/CameraModule.kt", "reason": "CameraX wrapper; needs resolution config per tier"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/detection/hand/HandTracker.kt", "reason": "MediaPipe HandLandmarker; needs delegate/numHands config per tier"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/detection/color/ColorSegmenter.kt", "reason": "OpenCV color segmentation; needs downsample config per tier"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/session/SessionViewModel.kt", "reason": "Central orchestrator; wiring point for PerformanceConfig propagation"}

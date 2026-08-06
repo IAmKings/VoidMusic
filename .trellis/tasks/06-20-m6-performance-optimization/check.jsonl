@@ -1,0 +1,10 @@
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/prd.md", "reason": "Acceptance criteria checklist to verify against"}
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/design.md", "reason": "Verify implementation matches design decisions and tradeoffs"}
+{"file": ".trellis/tasks/06-20-m6-performance-optimization/implement.md", "reason": "Step-by-step validation gates to check off"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Code quality standards and forbidden patterns"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/persistence/Settings.kt", "reason": "Verify PerformanceLevel DataStore schema not broken"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/audio/DrumEngine.kt", "reason": "Verify AudioTrack fallback doesn't regress Oboe path"}
+{"file": "app/src/main/java/com/electrodig/objectdrumstudio/detection/color/ColorSegmenter.kt", "reason": "Verify OpenCV trimming didn't break color detection pipeline"}
+{"file": "app/src/test/java/com/electrodig/objectdrumstudio/detection/hit/HitDetectorTest.kt", "reason": "Existing hit detection tests; must still pass"}
+{"file": "app/src/test/java/com/electrodig/objectdrumstudio/detection/OneEuroFilterTest.kt", "reason": "Existing filter tests; must still pass"}
+{"file": "app/src/main/AndroidManifest.xml", "reason": "Verify no INTERNET permission for privacy compliance"}

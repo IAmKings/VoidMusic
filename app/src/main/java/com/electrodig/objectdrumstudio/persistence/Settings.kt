@@ -1,0 +1,32 @@
+package com.electrodig.objectdrumstudio.persistence
+
+import com.electrodig.objectdrumstudio.detection.color.DetectionConfig
+import kotlinx.serialization.Serializable
+
+/**
+ * Performance tiers (PRD §4.4 / F8.3). Lower tiers drop the analysis resolution
+ * / frame rate to keep low-end devices smooth and cool.
+ */
+@Serializable
+enum class PerformanceLevel { LOW, MEDIUM, HIGH }
+
+/**
+ * All persisted user settings (PRD F8). Stored as a single JSON blob in DataStore
+ * Preferences — small enough that coarse-grained persistence is simplest and
+ * avoids a large key surface.
+ */
+@Serializable
+data class Settings(
+    val detectionConfig: DetectionConfig = DetectionConfig.DEFAULT,
+    val performanceLevel: PerformanceLevel = PerformanceLevel.MEDIUM,
+    val hapticEnabled: Boolean = true,
+    val masterVolume: Float = 0.9f,
+    /** Last-used BPM so the sequencer resumes where the user left it. */
+    val lastBpm: Int = 110,
+    /** Index of the active built-in kit (PRD F6.6 / F7). */
+    val activeKitIndex: Int = 0
+) {
+    companion object {
+        val DEFAULT = Settings()
+    }
+}
