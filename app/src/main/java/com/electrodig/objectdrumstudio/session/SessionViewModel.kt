@@ -11,12 +11,15 @@ import com.electrodig.objectdrumstudio.detection.color.DetectionConfig
 import com.electrodig.objectdrumstudio.detection.color.DrumZone
 import com.electrodig.objectdrumstudio.detection.color.HsvPreset
 import com.electrodig.objectdrumstudio.persistence.PerformanceLevel
+import com.electrodig.objectdrumstudio.persistence.CalibrationPoint
 import com.electrodig.objectdrumstudio.persistence.Settings
 import com.electrodig.objectdrumstudio.persistence.SettingsRepository
+import com.electrodig.objectdrumstudio.persistence.KitRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -29,6 +32,7 @@ import kotlinx.coroutines.launch
 class SessionViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
+    private val kitRepository = KitRepository(app)
     private val powerManager = app.getSystemService(PowerManager::class.java)
 
     private val _uiState = MutableStateFlow(SessionUiState())
@@ -38,9 +42,23 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     val settings: StateFlow<Settings> = repo.settings.stateIn(
         viewModelScope, SharingStarted.Eagerly, Settings.DEFAULT
     )
+    /** Becomes true after DataStore has emitted a real snapshot, not stateIn's default. */
+    val settingsLoaded: StateFlow<Boolean> = repo.settings
+        .map { true }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // Auto-switch to LOW tier when battery saver is active (PRD R6.2).
     init {
+        viewModelScope.launch {
+            runCatching { kitRepository.seedBuiltIns() }
+                .onFailure { Log.e("SessionVM", "Failed to seed built-in kit metadata", it) }
+        }
+        viewModelScope.launch {
+            repo.settings.collect { saved ->
+                val mode = StudioMode.entries.firstOrNull { it.name == saved.lastMode } ?: StudioMode.TAP
+                _uiState.update { it.copy(mode = mode) }
+            }
+        }
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context?, intent: Intent?) {
                 if (intent == null) return
@@ -77,7 +95,10 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     private val _flashedZoneIds = MutableStateFlow<Set<Int>>(emptySet())
     val flashedZoneIds: StateFlow<Set<Int>> = _flashedZoneIds.asStateFlow()
 
-    fun setMode(mode: StudioMode) { _uiState.update { it.copy(mode = mode) } }
+    fun setMode(mode: StudioMode) {
+        _uiState.update { it.copy(mode = mode) }
+        repoUpdate { it.copy(lastMode = mode.name) }
+    }
 
     fun setCameraReady(ready: Boolean) { _uiState.update { it.copy(isCameraReady = ready) } }
 
@@ -104,6 +125,34 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     fun setLastBpm(bpm: Int) { repoUpdate { it.copy(lastBpm = bpm.coerceIn(40, 220)) } }
 
     fun setActiveKit(index: Int) { repoUpdate { it.copy(activeKitIndex = index) } }
+
+    fun setHitVelocityThreshold(value: Float) {
+        repoUpdate { it.copy(hitVelocityThreshold = value.coerceIn(0.2f, 2.0f)) }
+    }
+
+    fun setHitCooldownMs(value: Long) {
+        repoUpdate { it.copy(hitCooldownMs = value.coerceIn(80L, 500L)) }
+    }
+
+    fun setSmoothing(minCutoff: Float, beta: Float) {
+        repoUpdate {
+            it.copy(
+                smoothingMinCutoff = minCutoff.coerceIn(1.5f, 4.0f),
+                smoothingBeta = beta.coerceIn(0.02f, 0.1f)
+            )
+        }
+    }
+
+    fun saveSequence(bpm: Int, grid: List<List<Boolean>>) {
+        val safeGrid = List(4) { row -> List(16) { step -> grid.getOrNull(row)?.getOrNull(step) ?: false } }
+        repoUpdate { it.copy(lastBpm = bpm.coerceIn(40, 220), sequenceGrid = safeGrid) }
+    }
+
+    fun setCalibration(corners: List<com.electrodig.objectdrumstudio.detection.grid.GridScanner.GridPoint>) {
+        if (corners.size != 4) return
+        val snapshot = corners.map { CalibrationPoint(it.x.coerceIn(0f, 1f), it.y.coerceIn(0f, 1f)) }
+        repoUpdate { it.copy(calibration = snapshot) }
+    }
 
     fun resetSettings() {
         viewModelScope.launch { repo.reset() }

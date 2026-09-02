@@ -5,6 +5,9 @@ import android.util.Log
 import com.electrodig.objectdrumstudio.R
 import com.electrodig.objectdrumstudio.detection.color.DrumPad
 
+/** The playback backend currently serving trigger events. */
+enum class AudioBackend { NONE, NATIVE_OBOE, SOUND_POOL }
+
 /**
  * Low-latency drum playback engine backed by Oboe (AAudio) via JNI (PRD F6 / §9.5).
  *
@@ -25,7 +28,11 @@ class DrumEngine(private val context: Context) {
     /** Whether the engine is running and samples are loaded. */
     @Volatile private var ready = false
     @Volatile private var nativeLoaded = false
+    @Volatile var backend: AudioBackend = AudioBackend.NONE
+        private set
     private var fallback: SoundPoolDrumEngine? = null
+    private var kit: Kit = BuiltInKits.DEFAULT
+    @Volatile private var masterVolume = 0.9f
 
     /**
      * Load the built-in kit and open the audio stream. Idempotent.
@@ -34,67 +41,106 @@ class DrumEngine(private val context: Context) {
      */
     fun start(): Boolean {
         if (ready) return true
-        if (!loadNative()) {
-            Log.w(TAG, "Native lib not available — falling back to SoundPool")
-            val fb = SoundPoolDrumEngine(context)
-            if (fb.start()) {
-                fallback = fb
-                ready = true
-                return true
-            }
-            Log.e(TAG, "SoundPool fallback also failed — audio disabled")
+        if (loadNative() && startNative()) {
+            backend = AudioBackend.NATIVE_OBOE
+            ready = true
+            return true
+        }
+        // nativeStart may have opened a stream before an error is reported.
+        // Release that partial state before handing playback to SoundPool.
+        if (nativeLoaded) {
+            runCatching { nativeStop() }
+                .onFailure { Log.w(TAG, "Failed to clean up native startup", it) }
+        }
+
+        Log.w(TAG, "Native Oboe unavailable — falling back to SoundPool")
+        val fb = SoundPoolDrumEngine(context, kit)
+        if (fb.start()) {
+            fallback = fb
+            backend = AudioBackend.SOUND_POOL
+            ready = true
+            return true
+        }
+        backend = AudioBackend.NONE
+        Log.e(TAG, "SoundPool fallback also failed — audio disabled")
+        return false
+    }
+
+    private fun startNative(): Boolean {
+        val loaded = DrumPad.entries.associateWith { pad ->
+            kit.samples[pad]?.let(::loadWav)
+        }
+        if (loaded.any { it.value == null }) {
+            Log.e(TAG, "Built-in kit is incomplete; native engine will not start")
             return false
         }
-        val loaded = DrumPad.entries.associateWith { loadWav(it) }
-        if (loaded.any { it.value == null }) {
-            Log.e(TAG, "Some samples failed to load")
-        }
-        val ok = try {
+        return try {
             nativeStart(
                 context.assets,
-                loaded.mapNotNull { (pad, data) -> data?.let { pad.ordinal to it } }
+                loaded.map { (pad, data) -> pad.ordinal to requireNotNull(data) }
                     .toMap()
             )
         } catch (t: Throwable) {
             Log.e(TAG, "nativeStart failed", t); false
         }
-        ready = ok
-        return ok
     }
 
     /** True when native Oboe is active (not the SoundPool fallback). */
-    val isNativeAvailable: Boolean get() = nativeLoaded && ready
+    val isNativeAvailable: Boolean get() = backend == AudioBackend.NATIVE_OBOE
 
     /** Trigger [pad] immediately at [velocity] (0..1). No-op if not ready. */
     fun trigger(pad: DrumPad, velocity: Float) {
         if (!ready) return
-        fallback?.let {
-            it.trigger(pad, velocity)
-            return
-        }
-        try {
-            nativeTrigger(pad.ordinal, velocity.coerceIn(0f, 1f))
-        } catch (t: Throwable) {
-            Log.w(TAG, "nativeTrigger failed", t)
+        when (backend) {
+            AudioBackend.SOUND_POOL -> fallback?.trigger(pad, velocity)
+            AudioBackend.NATIVE_OBOE -> try {
+                nativeTrigger(pad.ordinal, velocity.coerceIn(0f, 1f))
+            } catch (t: Throwable) {
+                Log.w(TAG, "nativeTrigger failed", t)
+            }
+            AudioBackend.NONE -> Unit
         }
     }
 
     /** Set master gain 0..1. */
     fun setMasterVolume(volume: Float) {
+        masterVolume = volume.coerceIn(0f, 1f)
         if (!ready) return
-        fallback?.let {
-            it.setMasterVolume(volume)
-            return
+        when (backend) {
+            AudioBackend.SOUND_POOL -> fallback?.setMasterVolume(masterVolume)
+            AudioBackend.NATIVE_OBOE -> try {
+                nativeSetVolume(masterVolume)
+            } catch (_: Throwable) {
+                // A failing volume update must not take down the interaction path.
+            }
+            AudioBackend.NONE -> Unit
         }
-        try { nativeSetVolume(volume.coerceIn(0f, 1f)) } catch (t: Throwable) { }
+    }
+
+    /** Applies a built-in kit to the active backend. Returns false if reloading fails. */
+    fun setKit(newKit: Kit): Boolean {
+        if (kit.id == newKit.id) return true
+        kit = newKit
+        if (!ready) return true
+        stop()
+        val restarted = start()
+        if (restarted) setMasterVolume(masterVolume)
+        return restarted
     }
 
     /** Stop and release the audio resources (PRD §4.4 background release). */
     fun stop() {
         if (!ready) return
-        fallback?.stop()
+        if (backend == AudioBackend.SOUND_POOL) fallback?.stop()
         fallback = null
-        try { nativeStop() } catch (t: Throwable) { Log.w(TAG, "nativeStop failed", t) }
+        if (backend == AudioBackend.NATIVE_OBOE) {
+            try {
+                nativeStop()
+            } catch (t: Throwable) {
+                Log.w(TAG, "nativeStop failed", t)
+            }
+        }
+        backend = AudioBackend.NONE
         ready = false
     }
 
@@ -110,16 +156,10 @@ class DrumEngine(private val context: Context) {
     }
 
     /** Decode a res/raw WAV into a mono float [-1,1] array. Returns null on failure. */
-    private fun loadWav(pad: DrumPad): FloatArray? {
-        val resId = when (pad) {
-            DrumPad.KICK -> R.raw.kick
-            DrumPad.SNARE -> R.raw.snare
-            DrumPad.CLAP -> R.raw.clap
-            DrumPad.TOM -> R.raw.tom
-            DrumPad.HIHAT -> R.raw.hihat
-        }
+    private fun loadWav(sample: SampleRef): FloatArray? {
+        val resId = sample.rawResId
         return runCatching { decodeWav(resId) }.getOrElse {
-            Log.e(TAG, "decode ${pad.name} failed", it); null
+            Log.e(TAG, "decode kit sample failed", it); null
         }
     }
 

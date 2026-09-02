@@ -26,10 +26,9 @@ data class Kit(
 )
 
 /**
- * Catalogue of built-in kits (PRD F7.1). All kits reuse the five synthesized
- * samples in `res/raw` for now; M5 ships the "Default" kit and two re-colours
- * (mute variants) so the selector is exercisable. Real additional sample sets
- * can be added without touching the engine.
+ * Catalogue of built-in kits (PRD F7.1). The second kit deliberately remaps the
+ * bundled samples, so selecting it changes the sound for every pad even before
+ * a future release adds another sample pack.
  */
 object BuiltInKits {
 
@@ -41,8 +40,20 @@ object BuiltInKits {
         }
     )
 
+    val ELECTRO = Kit(
+        id = "electro",
+        name = "电子打击",
+        samples = mapOf(
+            DrumPad.KICK to SampleRef(R.raw.tom),
+            DrumPad.SNARE to SampleRef(R.raw.clap),
+            DrumPad.CLAP to SampleRef(R.raw.hihat),
+            DrumPad.TOM to SampleRef(R.raw.snare),
+            DrumPad.HIHAT to SampleRef(R.raw.kick)
+        )
+    )
+
     /** All selectable built-in kits, in display order. */
-    val all: List<Kit> = listOf(DEFAULT)
+    val all: List<Kit> = listOf(DEFAULT, ELECTRO)
 
     fun byIndex(i: Int): Kit = all.getOrElse(i) { DEFAULT }
 

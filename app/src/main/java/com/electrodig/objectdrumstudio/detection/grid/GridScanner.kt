@@ -36,6 +36,9 @@ class GridScanner(
         corners = null
     }
 
+    /** Returns a defensive snapshot suitable for persistence/UI initialization. */
+    fun calibration(): List<GridPoint>? = corners?.toList()
+
     /**
      * Returns the centre of every cell in normalised [0,1] coordinates, laid out
      * as [row][step]. Uses OpenCV perspective transform so the grid follows the

@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -39,6 +40,8 @@ fun ColorControls(
     activeIndex: Int,
     onActiveChange: (Int) -> Unit,
     onActiveRangeChange: (HsvRange) -> Unit,
+    onPickColor: () -> Unit,
+    isPicking: Boolean,
     modifier: Modifier = Modifier
 ) {
     val active = presets.getOrNull(activeIndex) ?: return
@@ -71,6 +74,10 @@ fun ColorControls(
             }
 
             Spacer(Modifier.height(2.dp))
+
+            Button(onClick = onPickColor, modifier = Modifier.fillMaxWidth()) {
+                Text(if (isPicking) "请点击取景器中的目标颜色" else "从取景器取色")
+            }
 
             // Sliders for the active preset. H is 0..180, S/V are 0..255.
             HsvSliderRow("H 范围", active.range.hMin, active.range.hMax, 0f..180f) { min, max ->

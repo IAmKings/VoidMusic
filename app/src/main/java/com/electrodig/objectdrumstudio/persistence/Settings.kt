@@ -24,9 +24,26 @@ data class Settings(
     /** Last-used BPM so the sequencer resumes where the user left it. */
     val lastBpm: Int = 110,
     /** Index of the active built-in kit (PRD F6.6 / F7). */
-    val activeKitIndex: Int = 0
+    val activeKitIndex: Int = 0,
+    /** Minimum downward fingertip speed in normalized display units per second. */
+    val hitVelocityThreshold: Float = 0.6f,
+    /** Minimum delay between candidates from one fingertip. */
+    val hitCooldownMs: Long = 250L,
+    /** One-Euro filter parameters used by the overlay only. */
+    val smoothingMinCutoff: Float = 3.0f,
+    val smoothingBeta: Float = 0.07f,
+    /** Session snapshot fields use DTOs so persistence does not depend on UI objects. */
+    val lastMode: String = "TAP",
+    val sequenceGrid: List<List<Boolean>> = defaultSequenceGrid(),
+    val calibration: List<CalibrationPoint> = emptyList()
 ) {
     companion object {
         val DEFAULT = Settings()
+
+        private fun defaultSequenceGrid(): List<List<Boolean>> =
+            List(4) { List(16) { false } }
     }
 }
+
+@Serializable
+data class CalibrationPoint(val x: Float, val y: Float)

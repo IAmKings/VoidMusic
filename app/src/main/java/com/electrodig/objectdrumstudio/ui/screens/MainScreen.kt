@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,20 +38,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.electrodig.objectdrumstudio.audio.DrumEngine
+import com.electrodig.objectdrumstudio.audio.BuiltInKits
 import com.electrodig.objectdrumstudio.audio.Transport
 import com.electrodig.objectdrumstudio.camera.CameraModule
 import com.electrodig.objectdrumstudio.camera.CameraPreview
 import com.electrodig.objectdrumstudio.camera.FrameRouter
+import com.electrodig.objectdrumstudio.camera.PreviewCoordinateMapper
 import com.electrodig.objectdrumstudio.detection.color.ColorSegmenter
 import com.electrodig.objectdrumstudio.detection.color.DrumZone
 import com.electrodig.objectdrumstudio.detection.color.HsvRange
+import com.electrodig.objectdrumstudio.detection.color.HsvColorPicker
 import com.electrodig.objectdrumstudio.detection.color.OpenCvLoader
+import com.electrodig.objectdrumstudio.detection.color.ZoneTracker
 import com.electrodig.objectdrumstudio.detection.grid.GridScanner
 import com.electrodig.objectdrumstudio.detection.hand.HandTracker
 import com.electrodig.objectdrumstudio.detection.hand.OneEuroHandStabilizer
@@ -69,6 +76,10 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.collect
 
 /**
  * Main viewfinder screen. Gated by CAMERA permission. Once granted:
@@ -90,16 +101,24 @@ fun MainScreen(
     val camPermission = rememberPermissionState(Manifest.permission.CAMERA)
 
     val settings by viewModel.settings.collectAsState()
+    val settingsLoaded by viewModel.settingsLoaded.collectAsState()
     val perfConfig = PerformanceConfig.forLevel(settings.performanceLevel)
 
     // HandTracker and segmenter are keyed by performance level so tier changes
     // take effect (recreates with new resolution / delegate / maxHands / downsample).
-    val handTracker = remember(settings.performanceLevel) {
+    val handTracker = remember(
+        settings.performanceLevel,
+        settings.smoothingMinCutoff,
+        settings.smoothingBeta
+    ) {
         HandTracker(
             context,
             maxHands = perfConfig.maxHands,
             delegate = perfConfig.mediaPipeDelegate,
-            stabilizer = OneEuroHandStabilizer(minCutoff = 3.0f, beta = 0.07f)
+            stabilizer = OneEuroHandStabilizer(
+                minCutoff = settings.smoothingMinCutoff,
+                beta = settings.smoothingBeta
+            )
         )
     }
     val segmenter = remember(settings.performanceLevel) {
@@ -108,15 +127,16 @@ fun MainScreen(
     val gridScanner = remember { GridScanner() }
     val drumEngine = remember { DrumEngine(context) }
     val transport = remember { Transport(drumEngine) }
-    val hitDetector = remember { HitDetector() }
+    val hitDetector = remember(settings.hitVelocityThreshold, settings.hitCooldownMs) {
+        HitDetector(
+            velocityThreshold = settings.hitVelocityThreshold,
+            cooldownMs = settings.hitCooldownMs
+        )
+    }
     val hitArbiter = remember { HitArbiter() }
     val view = LocalView.current
 
     val hands by handTracker.hands.collectAsState()
-    // Raw (un-smoothed) hands for the hit pipeline: the stabilizer flattens
-    // tap peaks, so HitDetector must see the raw fingertip trajectory. The
-    // overlay continues to use the smoothed `hands` for steady rendering.
-    val rawHands by handTracker.rawHands.collectAsState()
     val session by viewModel.uiState.collectAsState()
     val zones by viewModel.zones.collectAsState()
     val flashedZoneIds by viewModel.flashedZoneIds.collectAsState()
@@ -126,28 +146,82 @@ fun MainScreen(
     var activePresetIndex by remember { mutableIntStateOf(0) }
     var calibrating by remember { mutableStateOf(false) }
     var colorPanelOpen by remember { mutableStateOf(true) }
-    val modeHolder = remember { mutableStateOf(session.mode) }
-    LaunchedEffect(session.mode) { modeHolder.value = session.mode }
-    val hapticHolder = remember { mutableStateOf(settings.hapticEnabled) }
-    LaunchedEffect(settings.hapticEnabled) { hapticHolder.value = settings.hapticEnabled }
+    var pickingColor by remember { mutableStateOf(false) }
+    var sessionRestored by remember { mutableStateOf(false) }
+    val modeHolder = remember { AtomicReference(session.mode) }
+    LaunchedEffect(session.mode) { modeHolder.set(session.mode) }
+    val hapticHolder = remember { AtomicReference(settings.hapticEnabled) }
+    LaunchedEffect(settings.hapticEnabled) { hapticHolder.set(settings.hapticEnabled) }
     val lastCellToggleMs = remember { HashMap<Long, Long>() }
     // Color segmentation runs every Nth frame (zones are spatially slow-moving;
     // running it every frame starves the hand path on low-FPS devices). Hit
     // detection runs every frame using the most recent cached zones.
     val zoneFrameCounter = remember { intArrayOf(0) }
-    val cachedZones = remember { mutableStateOf<List<DrumZone>>(emptyList()) }
+    val cachedZones = remember { AtomicReference<List<DrumZone>>(emptyList()) }
+    val zoneTracker = remember(settings.performanceLevel) { ZoneTracker() }
+    val viewportRef = remember { AtomicReference<PreviewViewport?>(null) }
+    val pickerRequestRef = remember { AtomicReference<PickerRequest?>(null) }
+    val analysisEvents = remember {
+        MutableSharedFlow<AnalysisEvent>(
+            extraBufferCapacity = 32,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST
+        )
+    }
+
+    // The camera executor only emits immutable events. Compose/Android View work
+    // is deliberately consumed here on the main dispatcher.
+    LaunchedEffect(analysisEvents) {
+        analysisEvents.collect { event ->
+            when (event) {
+                is AnalysisEvent.Zones -> viewModel.setZones(event.zones)
+                is AnalysisEvent.Fps -> viewModel.setAnalysisFps(event.value)
+                is AnalysisEvent.Hit -> {
+                    viewModel.flashZones(event.zoneIds)
+                    if (event.haptic) performTapHaptic(view)
+                }
+                is AnalysisEvent.StepToggle -> if (event.haptic) performTapHaptic(view)
+                is AnalysisEvent.ColorPicked -> {
+                    viewModel.updateDetectionConfig { config ->
+                        val presets = config.presets.toMutableList()
+                        if (event.presetIndex in presets.indices) {
+                            presets[event.presetIndex] = presets[event.presetIndex].copy(range = event.range)
+                        }
+                        config.copy(presets = presets)
+                    }
+                }
+            }
+        }
+    }
 
     // Initialise OpenCV + the landmarker + the audio engine once.
     LaunchedEffect(Unit) {
         OpenCvLoader.ensureInitialised(context)
         handTracker.setup()
+        drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
         drumEngine.start()
-        transport.setBpm(settings.lastBpm)
         drumEngine.setMasterVolume(settings.masterVolume)
     }
-    // Persist BPM + apply master volume as they change (PRD F8).
-    LaunchedEffect(sequence.bpm) { viewModel.setLastBpm(sequence.bpm) }
+    // Restore only after DataStore emits. Otherwise stateIn's temporary defaults
+    // could overwrite a real saved session during cold start.
+    LaunchedEffect(settingsLoaded) {
+        if (!settingsLoaded || sessionRestored) return@LaunchedEffect
+        transport.restore(settings.lastBpm, settings.sequenceGrid)
+        val corners = settings.calibration
+        if (corners.size == 4) {
+            gridScanner.setCalibration(corners.map { GridScanner.GridPoint(it.x, it.y) })
+        } else {
+            gridScanner.clearCalibration()
+        }
+        sessionRestored = true
+    }
+    LaunchedEffect(sessionRestored, sequence.bpm, sequence.grid) {
+        if (sessionRestored) viewModel.saveSequence(sequence.bpm, sequence.grid)
+    }
+    // Apply audio settings as they change (PRD F8).
     LaunchedEffect(settings.masterVolume) { drumEngine.setMasterVolume(settings.masterVolume) }
+    LaunchedEffect(settings.activeKitIndex) {
+        drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
+    }
     DisposableEffect(Unit) {
         onDispose {
             handTracker.close()
@@ -165,12 +239,18 @@ fun MainScreen(
         )
     }
 
-    // Use a holder so the camera's analyzer closure reads the live config
-    // instead of capturing a stale value (remember runs once).
-    val configHolder = remember { mutableStateOf(detectionConfig) }
-    LaunchedEffect(detectionConfig) { configHolder.value = detectionConfig }
+    // Atomic references prevent the camera executor from reading Compose
+    // snapshots while still giving it the current configuration.
+    val configHolder = remember { AtomicReference(detectionConfig) }
+    LaunchedEffect(detectionConfig) { configHolder.set(detectionConfig) }
 
-    val camera = remember(settings.performanceLevel) {
+    val camera = remember(
+        settings.performanceLevel,
+        settings.smoothingMinCutoff,
+        settings.smoothingBeta,
+        settings.hitVelocityThreshold,
+        settings.hitCooldownMs
+    ) {
         CameraModule(
             context = context,
             targetResolution = perfConfig.cameraResolution,
@@ -181,25 +261,44 @@ fun MainScreen(
                         handTracker.detect(bitmap, handTracker.timestampMs(proxy.imageInfo.timestamp))
                     },
                     // Colour segmentation → zones, then hit detection → triggers.
-                    { bitmap, proxy ->
+                    segmentation@ { bitmap, proxy ->
                         val ts = handTracker.timestampMs(proxy.imageInfo.timestamp)
                         // Segmentation is expensive OpenCV work; run it every 3rd
                         // frame so it doesn't starve the hand path on low-FPS
                         // devices. Zones move slowly so a stale cache is fine.
                         zoneFrameCounter[0]++
-                        if (zoneFrameCounter[0] % 3 == 0) {
-                            val zs = segmenter.segment(bitmap, configHolder.value)
-                            cachedZones.value = zs
-                            viewModel.setZones(zs)
+                        val viewport = viewportRef.get()
+                        val mapper = viewport?.let {
+                            PreviewCoordinateMapper.forFillCenter(
+                                bitmap.width, bitmap.height, it.width, it.height
+                            )
+                        } ?: return@segmentation
+                        pickerRequestRef.getAndSet(null)?.let { request ->
+                            val sourcePoint = mapper.unmap(request.x, request.y)
+                            HsvColorPicker.sample(bitmap, sourcePoint.x, sourcePoint.y)?.let { range ->
+                                analysisEvents.tryEmit(AnalysisEvent.ColorPicked(request.presetIndex, range))
+                            }
                         }
-                        val zs = cachedZones.value
+                        if (zoneFrameCounter[0] % 3 == 0) {
+                            val trackedZones = zoneTracker.update(
+                                segmenter.segment(bitmap, configHolder.get()),
+                                ts
+                            )
+                            cachedZones.set(trackedZones)
+                            analysisEvents.tryEmit(AnalysisEvent.Zones(trackedZones.map(mapper::map)))
+                        }
+                        val zs = cachedZones.get().map(mapper::map)
                         // Read raw (un-smoothed) hands directly from the StateFlow.
-                        // StateFlow.value is thread-safe and avoids the stale-read
-                        // problem of a mutableStateOf written from the main thread
-                        // but read here on the analysis background thread.
-                        val latestHands = handTracker.rawHands.value
+                        // StateFlow.value is thread-safe. Map it into PreviewView
+                        // coordinates before hit testing so it shares the zone/grid
+                        // coordinate system.
+                        val latestHands = handTracker.rawHands.value.map { hand ->
+                            PreviewCoordinateMapper.forFillCenter(
+                                hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
+                            )?.map(hand) ?: hand
+                        }
                         val candidates = hitDetector.update(latestHands, ts)
-                        if (modeHolder.value == StudioMode.STEP) {
+                        if (modeHolder.get() == StudioMode.STEP) {
                             // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
                             if (candidates.isNotEmpty()) {
                                 val tip = latestHands.firstOrNull()?.fingertip
@@ -213,12 +312,9 @@ fun MainScreen(
                                         if (ts - last >= STEP_TOGGLE_COOLDOWN_MS) {
                                             transport.toggleStep(cell.row, cell.step)
                                             lastCellToggleMs[key] = ts
-                                            if (hapticHolder.value) {
-                                                view.performHapticFeedback(
-                                                    android.view.HapticFeedbackConstants.KEYBOARD_TAP,
-                                                    android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
-                                                )
-                                            }
+                                            analysisEvents.tryEmit(
+                                                AnalysisEvent.StepToggle(hapticHolder.get())
+                                            )
                                         }
                                     }
                                 }
@@ -228,19 +324,18 @@ fun MainScreen(
                             val triggers = hitArbiter.arbitrate(candidates, zs)
                             if (triggers.isNotEmpty()) {
                                 for (t in triggers) drumEngine.trigger(t.pad, t.velocity)
-                                viewModel.flashZones(triggers.map { it.zoneId })
-                                if (hapticHolder.value) {
-                                    view.performHapticFeedback(
-                                        android.view.HapticFeedbackConstants.KEYBOARD_TAP,
-                                        android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+                                analysisEvents.tryEmit(
+                                    AnalysisEvent.Hit(
+                                        zoneIds = triggers.map { it.zoneId },
+                                        haptic = hapticHolder.get()
                                     )
-                                }
+                                )
                             }
                         }
                     }
                 ),
                 imageProxyConsumer = { proxy -> proxy.close() },
-                onFpsUpdate = { fps -> viewModel.setAnalysisFps(fps) }
+                onFpsUpdate = { fps -> analysisEvents.tryEmit(AnalysisEvent.Fps(fps)) }
             )
         )
     }
@@ -259,6 +354,17 @@ fun MainScreen(
     // happens in a LaunchedEffect below so it re-runs when the `camera` instance
     // is rebuilt (e.g. after a performance-tier change once settings settle).
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var previewViewport by remember { mutableStateOf<PreviewViewport?>(null) }
+    val mappedHands = remember(hands, previewViewport) {
+        val viewport = previewViewport
+        hands.map { hand ->
+            viewport?.let {
+                PreviewCoordinateMapper.forFillCenter(
+                    hand.imageWidth, hand.imageHeight, it.width, it.height
+                )?.map(hand)
+            } ?: hand
+        }
+    }
 
     // Unbind the old camera instance whenever it is replaced (performance tier
     // change rebuilds `camera` via remember(settings.performanceLevel)). Without
@@ -304,13 +410,41 @@ fun MainScreen(
             CameraPreview(
                 onPreviewViewReady = { pv: PreviewView ->
                     previewView = pv
+                },
+                onViewportSizeChanged = { width, height ->
+                    val viewport = PreviewViewport(width, height)
+                    previewViewport = viewport
+                    viewportRef.set(viewport)
                 }
             )
+
+            if (pickingColor) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(pickingColor) {
+                            detectTapGestures { offset ->
+                                val width = size.width.toFloat()
+                                val height = size.height.toFloat()
+                                if (width > 0f && height > 0f) {
+                                    pickerRequestRef.set(
+                                        PickerRequest(
+                                            x = offset.x / width,
+                                            y = offset.y / height,
+                                            presetIndex = activePresetIndex
+                                        )
+                                    )
+                                }
+                                pickingColor = false
+                            }
+                        }
+                ) { }
+            }
 
             if (!calibrating) {
                 if (session.mode == StudioMode.STEP) {
                     // Step-sequencer grid over the calibrated paper (F3.2).
-                    val tip = hands.firstOrNull()?.fingertip
+                    val tip = mappedHands.firstOrNull()?.fingertip
                     val fingertip = if (tip != null) GridScanner.GridPoint(tip.x, tip.y) else null
                     StepSequencerOverlay(
                         gridScanner = gridScanner,
@@ -325,7 +459,7 @@ fun MainScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-                HandOverlay(hands = hands, modifier = Modifier.fillMaxSize())
+                HandOverlay(hands = mappedHands, modifier = Modifier.fillMaxSize())
             }
 
             // Clear the hit-flash highlight after a short beat.
@@ -352,7 +486,8 @@ fun MainScreen(
             if (calibrating) {
                 CalibrationOverlay(
                     gridScanner = gridScanner,
-                    onConfirm = { /* corners applied to scanner inside overlay */ },
+                    initialCorners = gridScanner.calibration(),
+                    onConfirm = viewModel::setCalibration,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -393,6 +528,8 @@ fun MainScreen(
                             presets = detectionConfig.presets,
                             activeIndex = activePresetIndex,
                             onActiveChange = { activePresetIndex = it },
+                            onPickColor = { pickingColor = true },
+                            isPicking = pickingColor,
                             onActiveRangeChange = { range: HsvRange ->
                                 viewModel.updateDetectionConfig { cfg ->
                                     val presets = cfg.presets.toMutableList()
@@ -436,3 +573,23 @@ fun MainScreen(
 private const val FLASH_DURATION_MS = 120L
 /** Min ms between two toggles of the SAME step cell (prevents stutter-toggling). */
 private const val STEP_TOGGLE_COOLDOWN_MS = 350L
+
+private data class PreviewViewport(val width: Int, val height: Int)
+
+/** Immutable cross-thread messages from the camera analysis executor to UI. */
+private sealed interface AnalysisEvent {
+    data class Zones(val zones: List<DrumZone>) : AnalysisEvent
+    data class Fps(val value: Float) : AnalysisEvent
+    data class Hit(val zoneIds: List<Int>, val haptic: Boolean) : AnalysisEvent
+    data class StepToggle(val haptic: Boolean) : AnalysisEvent
+    data class ColorPicked(val presetIndex: Int, val range: HsvRange) : AnalysisEvent
+}
+
+private data class PickerRequest(val x: Float, val y: Float, val presetIndex: Int)
+
+private fun performTapHaptic(view: android.view.View) {
+    view.performHapticFeedback(
+        android.view.HapticFeedbackConstants.KEYBOARD_TAP,
+        android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+    )
+}

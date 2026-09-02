@@ -62,6 +62,23 @@ class Transport(
         }
     }
 
+    /** Restores the persisted grid without resuming playback. */
+    fun restore(bpm: Int, grid: List<List<Boolean>>) {
+        val safeGrid = List(SequenceState.DEFAULT_ROWS) { row ->
+            MutableList(SequenceState.DEFAULT_STEPS) { step ->
+                grid.getOrNull(row)?.getOrNull(step) ?: false
+            }
+        }
+        _state.update {
+            it.copy(
+                bpm = bpm.coerceIn(40, 220),
+                grid = safeGrid,
+                currentStep = 0,
+                isPlaying = false
+            )
+        }
+    }
+
     /** Start the loop (PRD F3.4). Idempotent. */
     fun play() {
         if (tickerJob?.isActive == true) return

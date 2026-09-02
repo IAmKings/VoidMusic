@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -22,10 +23,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +52,7 @@ fun SettingsScreen(
     viewModel: SessionViewModel = viewModel()
 ) {
     val settings by viewModel.settings.collectAsState()
+    var resetConfirmationVisible by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -123,9 +129,38 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ---- Hit response (PRD F8.3) ----
+            Section("击打识别") {
+                Text("击打灵敏度 ${"%.2f".format(settings.hitVelocityThreshold)}")
+                Slider(
+                    value = settings.hitVelocityThreshold,
+                    onValueChange = viewModel::setHitVelocityThreshold,
+                    valueRange = 0.2f..2.0f
+                )
+                Text("防抖 ${settings.hitCooldownMs} ms")
+                Slider(
+                    value = settings.hitCooldownMs.toFloat(),
+                    onValueChange = { viewModel.setHitCooldownMs(it.toLong()) },
+                    valueRange = 80f..500f
+                )
+                Text("手部平滑 ${"%.1f".format(settings.smoothingMinCutoff)} / ${"%.2f".format(settings.smoothingBeta)}")
+                Slider(
+                    value = settings.smoothingMinCutoff,
+                    onValueChange = { viewModel.setSmoothing(it, settings.smoothingBeta) },
+                    valueRange = 1.5f..4.0f
+                )
+                Slider(
+                    value = settings.smoothingBeta,
+                    onValueChange = { viewModel.setSmoothing(settings.smoothingMinCutoff, it) },
+                    valueRange = 0.02f..0.1f
+                )
+            }
+
+            HorizontalDivider()
+
             // ---- Reset (PRD F8.2) ----
             OutlinedButton(
-                onClick = { viewModel.resetSettings() },
+                onClick = { resetConfirmationVisible = true },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("恢复默认设置")
@@ -138,6 +173,25 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    if (resetConfirmationVisible) {
+        AlertDialog(
+            onDismissRequest = { resetConfirmationVisible = false },
+            title = { Text("恢复默认设置？") },
+            text = { Text("这会清除当前的颜色预设、性能、音量、振动和音色选择。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.resetSettings()
+                        resetConfirmationVisible = false
+                    }
+                ) { Text("恢复默认") }
+            },
+            dismissButton = {
+                TextButton(onClick = { resetConfirmationVisible = false }) { Text("取消") }
+            }
+        )
     }
 }
 

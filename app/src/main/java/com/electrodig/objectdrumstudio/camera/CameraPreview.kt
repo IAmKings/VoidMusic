@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -19,7 +20,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 @Composable
 fun CameraPreview(
     modifier: Modifier = Modifier,
-    onPreviewViewReady: (PreviewView) -> Unit
+    onPreviewViewReady: (PreviewView) -> Unit,
+    onViewportSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
 
@@ -40,7 +42,9 @@ fun CameraPreview(
             factory = {
                 previewView.also { onPreviewViewReady(it) }
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { onViewportSizeChanged(it.width, it.height) }
         )
     }
 }

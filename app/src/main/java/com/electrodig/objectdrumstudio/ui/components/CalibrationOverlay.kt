@@ -31,12 +31,13 @@ import com.electrodig.objectdrumstudio.detection.grid.GridScanner
 fun CalibrationOverlay(
     gridScanner: GridScanner,
     onConfirm: (corners: List<GridScanner.GridPoint>) -> Unit,
+    initialCorners: List<GridScanner.GridPoint>? = null,
     modifier: Modifier = Modifier
 ) {
     // Default corners: a centred rectangle the user can adjust.
-    var corners by remember {
+    var corners by remember(initialCorners) {
         mutableStateOf(
-            listOf(
+            initialCorners?.takeIf { it.size == 4 } ?: listOf(
                 GridScanner.GridPoint(0.15f, 0.20f),  // TL
                 GridScanner.GridPoint(0.85f, 0.20f),  // TR
                 GridScanner.GridPoint(0.85f, 0.80f),  // BR

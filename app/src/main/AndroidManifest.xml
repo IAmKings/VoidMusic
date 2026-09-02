@@ -9,6 +9,18 @@
     -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!--
+        MediaPipe's transitive transport dependency declares network permissions.
+        The app has no network feature, so remove them from the merged manifest
+        and keep the distributed package aligned with the local-first promise.
+    -->
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
+
     <!-- Camera hardware requirement (PRD §4.2: rear camera needed). -->
     <uses-feature
         android:name="android.hardware.camera.any"
