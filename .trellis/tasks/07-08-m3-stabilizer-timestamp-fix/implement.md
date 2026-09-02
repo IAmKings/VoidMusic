@@ -44,7 +44,7 @@
 
 ## Validation Commands
 
-- Unit tests: `./gradlew :app:testDebugUnitTest --tests "com.electrodig.objectdrumstudio.detection.hand.*"`
+- Unit tests: `./gradlew :app:testDebugUnitTest --tests "com.electrodig.voidmusic.detection.hand.*"`
 - Full build + lint (sanity): `./gradlew :app:assembleDebug`
 
 ## Review Gate

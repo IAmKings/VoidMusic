@@ -1,8 +1,8 @@
-# Object Drum Studio Android — 完整移植
+# Void Music Android — 完整移植
 
 ## Goal
 
-交付功能与网页版 [Object Drum Studio](https://github.com/Electro-Dig/object-drum-studio-public) 等价的安卓原生 AR 鼓机 App。纯本地运行，无网络依赖。
+交付功能与网页版 [Void Music](https://github.com/Electro-Dig/object-drum-studio-public) 等价的安卓原生 AR 鼓机 App。纯本地运行，无网络依赖。
 
 工期约 11 周，6 个里程碑。
 

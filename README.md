@@ -1,4 +1,4 @@
-# Object Drum Studio
+# Void Music
 
 AR 桌面鼓机 — 用手机摄像头识别桌面上的彩色物体和手部动作，实时触发鼓声。纯本地处理，无需网络。
 
@@ -32,7 +32,7 @@ AR 桌面鼓机 — 用手机摄像头识别桌面上的彩色物体和手部动
 ## 项目结构
 
 ```
-app/src/main/java/com/electrodig/objectdrumstudio/
+app/src/main/java/com/electrodig/voidmusic/
 ├── audio/          # 音频引擎 (Oboe JNI / SoundPool / WAV解码 / Transport时钟)
 ├── camera/         # CameraX 封装 (取景器 / 帧路由)
 ├── detection/

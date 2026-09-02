@@ -43,3 +43,19 @@
 ## Rollback
 
 不满足门槛时不发布；将失败指标路由回对应子任务，修复后从完整协议重新测量。
+
+## 应用身份迁移（已完成代码与构建验证）
+
+- 已将 Gradle namespace/applicationId、Kotlin 主代码/单测/仪器测试、R8 规则与 JNI 导出符号迁移至 `com.electrodig.voidmusic`，并同步迁移源码目录。
+- `DrumEngine` 的四个动态 JNI 导出均为 `Java_com_electrodig_voidmusic_audio_DrumEngine_*`；源码与当前产品文档无旧命名空间残留。
+- `./gradlew -PenableNativeBuild=true :app:testDebugUnitTest :app:lintDebug --no-daemon --max-workers=1` 已通过。
+- 真机已验证新的主应用可安装、冷启动（519 ms）并仅声明 `CAMERA` 权限；未发现网络权限。
+- 仪器测试 APK 在 PJZ110 安装时被设备以厂商错误码 `-99` 拒绝；清理可能残留的测试包后，流式与非流式安装重试均失败（设备有约 537 GiB 可用空间，主 APK 安装成功）。测试尚未执行；需解除该设备对测试 APK 的安装限制后重跑。
+- 先前 APK hash、冷启动和内存记录只适用于旧应用身份；正式发布前必须重新采集。
+
+## GitHub Actions 自动构建（2026-09-02）
+
+- 新增 `.github/workflows/android.yml`：向 `master` 推送或发起 PR 时，云端安装 Android API 35、NDK 27.2.12479018 与 CMake 3.22.1，执行原生构建路径下的单元测试、Lint 和 debug APK 编译。
+- 推送 `v*` 标签或通过 `workflow_dispatch` 手动触发时，在校验成功后额外构建 `app-release-unsigned.apk`，作为 GitHub Actions 构件保留 90 天。
+- 工作流以 `-Dorg.gradle.java.home="$JAVA_HOME"` 覆盖本机 Android Studio JBR 路径，确保 Ubuntu Runner 使用 Temurin JDK 17。
+- 当前仓库未配置签名证书或 GitHub Release 凭据，因此发布产物明确为未签名 APK；签名与正式 GitHub Release 将在密钥配置后接入。

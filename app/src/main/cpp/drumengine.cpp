@@ -231,7 +231,7 @@ Voice& acquireVoice() {
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeStart(
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
         JNIEnv* env, jobject /*thiz*/, jobject /*assetMgr*/, jobject samplesMap) {
 
     // ---- Read the pad→float[] map from Kotlin ----
@@ -325,7 +325,7 @@ Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeStart(
 }
 
 JNIEXPORT void JNICALL
-Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeTrigger(
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeTrigger(
         JNIEnv* /*env*/, jobject /*thiz*/, jint padOrdinal, jfloat velocity) {
     if (padOrdinal < 0 || padOrdinal >= kPadCount) return;
     if (!g_engine.triggers.enqueue({padOrdinal, velocity})) {
@@ -334,13 +334,13 @@ Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeTrigger(
 }
 
 JNIEXPORT void JNICALL
-Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeSetVolume(
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeSetVolume(
         JNIEnv* /*env*/, jobject /*thiz*/, jfloat volume) {
     g_engine.master.store(volume);
 }
 
 JNIEXPORT void JNICALL
-Java_com_electrodig_objectdrumstudio_audio_DrumEngine_nativeStop(
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStop(
         JNIEnv* /*env*/, jobject /*thiz*/) {
     if (g_engine.stream) {
         g_engine.stream->stop();

@@ -1,8 +1,8 @@
 {
   "id": "ods-android",
   "name": "ods-android",
-  "title": "Object Drum Studio Android — 完整移植",
-  "description": "根据根 PRD 交付功能与网页版 Object Drum Studio 等价的安卓原生 AR 鼓机 App。里程碑 M0-M6，工期约 11 周。",
+  "title": "Void Music Android — 完整移植",
+  "description": "根据根 PRD 交付功能与网页版 Void Music 等价的安卓原生 AR 鼓机 App。里程碑 M0-M6，工期约 11 周。",
   "status": "planning",
   "dev_type": null,
   "scope": null,

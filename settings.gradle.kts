@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Object Drum Studio"
+rootProject.name = "Void Music"
 include(":app")

@@ -9,15 +9,15 @@ plugins {
 }
 
 android {
-    namespace = "com.electrodig.objectdrumstudio"
+    namespace = "com.electrodig.voidmusic"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.electrodig.objectdrumstudio"
+        applicationId = "com.electrodig.voidmusic"
         minSdk = 26          // PRD: Android 8.0 (API 26)+
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-m6"
+        versionCode = 2
+        versionName = "0.1.0-m7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }

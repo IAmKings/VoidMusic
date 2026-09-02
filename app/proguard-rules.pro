@@ -1,4 +1,4 @@
-# R8 / ProGuard rules — Object Drum Studio
+# R8 / ProGuard rules — Void Music
 -keepattributes *Annotation*, InnerClasses, Signature, EnclosingMethod
 
 # Kotlin serialization
@@ -8,11 +8,11 @@
 -keepclasseswithmembers class kotlinx.serialization.json.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
--keep,includedescriptorclasses class com.electrodig.objectdrumstudio.**$$serializer { *; }
--keepclassmembers class com.electrodig.objectdrumstudio.** {
+-keep,includedescriptorclasses class com.electrodig.voidmusic.**$$serializer { *; }
+-keepclassmembers class com.electrodig.voidmusic.** {
     *** Companion;
 }
--keepclasseswithmembers class com.electrodig.objectdrumstudio.** {
+-keepclasseswithmembers class com.electrodig.voidmusic.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 
@@ -22,7 +22,7 @@
 }
 
 # DrumEngine native interface
--keep class com.electrodig.objectdrumstudio.audio.DrumEngine {
+-keep class com.electrodig.voidmusic.audio.DrumEngine {
     native <methods>;
 }
 
@@ -47,4 +47,3 @@
 # General
 -dontwarn javax.annotation.**
 -dontwarn java.lang.invoke.**
-

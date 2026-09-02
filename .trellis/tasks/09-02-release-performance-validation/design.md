@@ -13,3 +13,7 @@
 ## Release Gate
 
 所有行必须有原始记录和 Pass/Fail。缺设备、缺测量、超阈值、release 构建失败或隐私不通过均为 Fail，不得被平均值掩盖。
+
+## 应用身份迁移
+
+发布包的 namespace、applicationId、Kotlin 源码/测试命名空间和 JNI 导出符号统一为 `com.electrodig.voidmusic`。这会生成新的 Android 应用身份，旧版本地数据不会自动迁移；所有发布测量与 APK hash 必须在迁移后的包上重新采集。
