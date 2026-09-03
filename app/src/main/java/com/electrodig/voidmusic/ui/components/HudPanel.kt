@@ -4,12 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.TouchApp
@@ -29,6 +31,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.electrodig.voidmusic.camera.VisionMetrics
 import com.electrodig.voidmusic.session.StudioMode
 
 /**
@@ -43,7 +46,8 @@ fun HudPanel(
     signalStrength: Float,
     onModeSelected: (StudioMode) -> Unit,
     modifier: Modifier = Modifier,
-    fps: Float = -1f
+    fps: Float = -1f,
+    metrics: VisionMetrics = VisionMetrics()
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
         // Semi-transparent scrim so HUD text stays readable over the camera feed.
@@ -66,17 +70,34 @@ fun HudPanel(
         ) {
             ModeSwitcher(mode, onModeSelected)
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(end = 16.dp)
             ) {
-                StatChip("物件", objectCount.toString())
-                StatChip("手部", handCount.toString())
-                SignalMeter("触发信号", signalStrength)
+                item { StatChip("物件", objectCount.toString()) }
+                item { StatChip("手部", handCount.toString()) }
+                item { SignalMeter("触发信号", signalStrength) }
                 if (fps >= 0f) {
-                    StatChip("FPS", "%.0f".format(fps))
+                    item { StatChip("FPS", "%.0f".format(fps)) }
                 }
+                if (metrics.handResultFps >= 0f) {
+                    item { StatChip("手部 FPS", "%.0f".format(metrics.handResultFps)) }
+                }
+                PercentileChip("分割", metrics.segmentationP50Ms, metrics.segmentationP95Ms)
+                PercentileChip("缓存", metrics.zoneCacheAgeP50Ms, metrics.zoneCacheAgeP95Ms)
+                PercentileChip("击打→提交", metrics.hitToAudioSubmitP50Ms, metrics.hitToAudioSubmitP95Ms)
             }
         }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.PercentileChip(
+    label: String,
+    p50: Long,
+    p95: Long
+) {
+    if (p50 >= 0L && p95 >= 0L) {
+        item { StatChip(label, "$p50/$p95 ms") }
     }
 }
 

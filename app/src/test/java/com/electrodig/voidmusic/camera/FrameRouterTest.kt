@@ -71,4 +71,21 @@ class FrameRouterTest {
     fun `negative 180 degrees normalises to 180`() {
         assertEquals(180, normalisedRotationDegrees(-180))
     }
+
+    @Test
+    fun `uncapped analysis accepts every frame`() {
+        assertEquals(true, shouldAnalyzeFrame(10L, 0L, frameCap = 0))
+    }
+
+    @Test
+    fun `first capped frame is always accepted`() {
+        assertEquals(true, shouldAnalyzeFrame(10L, Long.MIN_VALUE, frameCap = 20))
+    }
+
+    @Test
+    fun `capped analysis rejects frames before its interval`() {
+        val intervalNs = 1_000_000_000L / 20L
+        assertEquals(false, shouldAnalyzeFrame(intervalNs - 1L, 0L, frameCap = 20))
+        assertEquals(true, shouldAnalyzeFrame(intervalNs, 0L, frameCap = 20))
+    }
 }

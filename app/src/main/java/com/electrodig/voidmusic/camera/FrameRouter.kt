@@ -17,22 +17,31 @@ import androidx.camera.core.ImageProxy
  * that throws cannot leak the proxy and stall the camera pipeline
  * (STRATEGY_KEEP_ONLY_LATEST).
  *
+ * @param analysisFrameCap maximum submitted analysis FPS; 0 leaves analysis uncapped.
  * @param onFpsUpdate optional callback invoked every ~1 second with the
  *                    smoothed analysis pipeline FPS.
  */
 class FrameRouter(
     private val bitmapConsumers: List<(android.graphics.Bitmap, ImageProxy) -> Unit>,
     private val imageProxyConsumer: (ImageProxy) -> Unit,
+    private val analysisFrameCap: Int = 0,
     private val onFpsUpdate: ((Float) -> Unit)? = null
 ) : ImageAnalysis.Analyzer {
 
     private var frameCount = 0
     private var lastFpsLogMs = SystemClock.elapsedRealtime()
+    private var lastSubmittedTimestampNs = Long.MIN_VALUE
 
     override fun analyze(image: ImageProxy) {
+        val timestampNs = image.imageInfo.timestamp
+        if (!shouldAnalyzeFrame(timestampNs, lastSubmittedTimestampNs, analysisFrameCap)) {
+            imageProxyConsumer(image)
+            return
+        }
+        lastSubmittedTimestampNs = timestampNs
         val raw = runCatching { image.toBitmap() }.getOrElse {
             Log.w(TAG, "Frame → bitmap failed", it)
-            image.close()
+            imageProxyConsumer(image)
             return
         }
         // Rotate the sensor-space bitmap into display orientation before fanning
@@ -43,7 +52,13 @@ class FrameRouter(
         // hit detector, overlays) receives a bitmap already in screen space, so
         // their normalised [0,1] coordinates line up with the viewfinder without
         // each one re-deriving the rotation.
-        val bitmap = rotateBitmapForDisplay(raw, image.imageInfo.rotationDegrees)
+        val bitmap = runCatching {
+            rotateBitmapForDisplay(raw, image.imageInfo.rotationDegrees)
+        }.getOrElse {
+            Log.w(TAG, "Frame rotation failed", it)
+            imageProxyConsumer(image)
+            return
+        }
         try {
             // Isolate each consumer so one throwing (e.g. an OpenCV op in the
             // colour/hit path) cannot abort the loop and leak the ImageProxy —
@@ -79,6 +94,17 @@ class FrameRouter(
  * (Bitmap/Matrix are not available in pure JVM tests).
  */
 internal fun normalisedRotationDegrees(degrees: Int): Int = ((degrees % 360) + 360) % 360
+
+/** True when a frame is allowed through the configured analysis-rate gate. */
+internal fun shouldAnalyzeFrame(
+    timestampNs: Long,
+    lastSubmittedTimestampNs: Long,
+    frameCap: Int
+): Boolean {
+    if (frameCap <= 0 || lastSubmittedTimestampNs == Long.MIN_VALUE) return true
+    val intervalNs = 1_000_000_000L / frameCap
+    return timestampNs - lastSubmittedTimestampNs >= intervalNs
+}
 
 /**
  * Rotate [bitmap] by [degrees] (clockwise) to match the display orientation.

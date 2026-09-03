@@ -1,6 +1,7 @@
 package com.electrodig.voidmusic.detection.hand
 
 import androidx.compose.ui.geometry.Offset
+import java.util.ArrayDeque
 
 /**
  * Indices of the 21 MediaPipe hand landmarks we care about.
@@ -37,4 +38,32 @@ data class Hand(
     val fingertip: NormalizedLandmark
         get() = landmarks.getOrNull(LandmarkIndex.INDEX_FINGERTIP)
             ?: NormalizedLandmark(0f, 0f)
+}
+
+/** Raw hand landmarks tied to the exact CameraX frame that produced them. */
+data class TimestampedHands(
+    val timestampMs: Long,
+    val hands: List<Hand>
+)
+
+/** Small thread-safe buffer that preserves the result/frame timestamp contract. */
+internal class TimestampedHandsQueue(private val capacity: Int) {
+    init { require(capacity > 0) }
+
+    private val frames = ArrayDeque<TimestampedHands>()
+
+    @Synchronized
+    fun offer(frame: TimestampedHands) {
+        if (frames.size == capacity) frames.removeFirst()
+        frames.addLast(frame)
+    }
+
+    @Synchronized
+    fun drain(): List<TimestampedHands> =
+        ArrayList<TimestampedHands>(frames.size).also { out ->
+            while (frames.isNotEmpty()) out += frames.removeFirst()
+        }
+
+    @Synchronized
+    fun clear() = frames.clear()
 }

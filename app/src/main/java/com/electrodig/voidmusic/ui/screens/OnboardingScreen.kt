@@ -35,6 +35,8 @@ import com.electrodig.voidmusic.ui.theme.Amber
 import com.electrodig.voidmusic.ui.theme.BackgroundDark
 import com.electrodig.voidmusic.ui.theme.Cyan
 import com.electrodig.voidmusic.ui.theme.Lime
+import com.electrodig.voidmusic.ui.theme.OnSurfaceDark
+import com.electrodig.voidmusic.ui.theme.OnSurfaceMuted
 import kotlinx.coroutines.launch
 
 private data class OnboardPage(
@@ -101,13 +103,14 @@ fun OnboardingScreen(onComplete: () -> Unit, modifier: Modifier = Modifier) {
                 Text(
                     p.title,
                     style = MaterialTheme.typography.headlineMedium,
+                    color = OnSurfaceDark,
                     textAlign = TextAlign.Center
                 )
                 Spacer(Modifier.size(12.dp))
                 Text(
                     p.body,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = OnSurfaceMuted,
                     textAlign = TextAlign.Center
                 )
             }

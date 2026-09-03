@@ -18,15 +18,19 @@ class HsvColorPickerTest {
     }
 
     @Test
-    fun `range is bounded at HSV limits`() {
-        val range = HsvColorPicker.rangeFor(listOf(HsvColorPicker.Sample(90, 2, 250)))!!
+    fun `low saturation sample cannot create an unstable color range`() {
+        assertNull(HsvColorPicker.rangeFor(listOf(HsvColorPicker.Sample(90, 2, 250))))
+    }
 
-        assertEquals(80, range.hMin)
-        assertEquals(100, range.hMax)
-        assertEquals(0, range.sMin)
-        assertEquals(37, range.sMax)
-        assertEquals(215, range.vMin)
-        assertEquals(255, range.vMax)
+    @Test
+    fun `isolated extreme samples do not widen saturation or value range`() {
+        val target = List(9) { HsvColorPicker.Sample(60, 180, 170) }
+        val range = HsvColorPicker.rangeFor(target + HsvColorPicker.Sample(60, 255, 255))!!
+
+        assertEquals(145, range.sMin)
+        assertEquals(215, range.sMax)
+        assertEquals(135, range.vMin)
+        assertEquals(205, range.vMax)
     }
 
     @Test

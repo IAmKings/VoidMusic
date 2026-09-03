@@ -18,25 +18,31 @@ class PadTracker(
     fun locate(zones: List<DrumZone>, point: HitCandidate.Point): DrumZone? {
         if (zones.isEmpty()) return null
 
-        // 1) Box containment (expanded).
-        for (zone in zones) {
-            val b = zone.normalizedBox
-            if (point.x in (b.left - boxExpansion)..(b.right + boxExpansion) &&
-                point.y in (b.top - boxExpansion)..(b.bottom + boxExpansion)
-            ) {
-                return zone
+        // 1) Prefer the nearest centre among all expanded boxes containing the
+        // point. Contour output order is not a reliable interaction priority.
+        zones.asSequence()
+            .filter { zone ->
+                val b = zone.normalizedBox
+                point.x in (b.left - boxExpansion)..(b.right + boxExpansion) &&
+                    point.y in (b.top - boxExpansion)..(b.bottom + boxExpansion)
             }
-        }
+            .minByOrNull { squaredDistance(it, point) }
+            ?.let { return it }
+
         // 2) Nearest centre within nearRadius.
         var best: DrumZone? = null
         var bestDist = Float.MAX_VALUE
         for (zone in zones) {
-            val dx = zone.normalizedCenter.x - point.x
-            val dy = zone.normalizedCenter.y - point.y
-            val d = dx * dx + dy * dy
+            val d = squaredDistance(zone, point)
             if (d < bestDist) { bestDist = d; best = zone }
         }
         val radiusSq = nearRadius * nearRadius
         return if (bestDist <= radiusSq) best else null
+    }
+
+    private fun squaredDistance(zone: DrumZone, point: HitCandidate.Point): Float {
+        val dx = zone.normalizedCenter.x - point.x
+        val dy = zone.normalizedCenter.y - point.y
+        return dx * dx + dy * dy
     }
 }

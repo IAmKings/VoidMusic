@@ -54,10 +54,10 @@ class PadTrackerTest {
 
     @Test
     fun `picks nearest when two zones could match`() {
-        val near = TestFixtures.zoneAt(id = 1, cx = 0.5f, cy = 0.5f)
-        val far = TestFixtures.zoneAt(id = 2, cx = 0.62f, cy = 0.5f, pad = DrumPad.SNARE)
-        // Point 0.5,0.5 lands inside near's box.
-        assertEquals(1, tracker.locate(listOf(near, far), HitCandidate.Point(0.5f, 0.5f))?.id)
+        val near = TestFixtures.zoneAt(id = 1, cx = 0.45f, cy = 0.5f)
+        val far = TestFixtures.zoneAt(id = 2, cx = 0.55f, cy = 0.5f, pad = DrumPad.SNARE)
+        // Both expanded boxes contain x=0.47, but the first list item is farther.
+        assertEquals(1, tracker.locate(listOf(far, near), HitCandidate.Point(0.47f, 0.5f))?.id)
     }
 
     @Test
