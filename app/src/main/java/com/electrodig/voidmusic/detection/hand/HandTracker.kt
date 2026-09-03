@@ -1,6 +1,7 @@
 package com.electrodig.voidmusic.detection.hand
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
@@ -22,7 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * our domain [Hand] type, optionally smoothed, then published.
  *
  * The [resultHandler] callback (set by the camera layer) is invoked for every
- * successful inference so the caller can, e.g., update the session HUD count.
+ * successful inference with its source/callback timestamps for observability.
  */
 class HandTracker(
     private val context: Context,
@@ -31,7 +32,7 @@ class HandTracker(
     private val minTrackingConfidence: Float = 0.5f,
     private val delegate: Delegate = Delegate.GPU,
     private val stabilizer: HandStabilizer = IdentityHandStabilizer,
-    private val resultHandler: ((List<Hand>) -> Unit)? = null
+    private val resultHandler: ((TimestampedHands) -> Unit)? = null
 ) {
 
     private var landmarker: HandLandmarker? = null
@@ -137,11 +138,12 @@ class HandTracker(
     }
 
     private fun onResult(result: HandLandmarkerResult, input: MPImage) {
+        val callbackCompletedAtMs = SystemClock.elapsedRealtime()
         val width = input.width
         val height = input.height
         val landmarkSets = result.landmarks()
         if (landmarkSets.isEmpty()) {
-            publish(emptyList(), width, height, result.timestampMs())
+            publish(emptyList(), width, height, result.timestampMs(), callbackCompletedAtMs)
             return
         }
 
@@ -164,16 +166,23 @@ class HandTracker(
                 imageHeight = height
             )
         }
-        publish(hands, width, height, result.timestampMs())
+        publish(hands, width, height, result.timestampMs(), callbackCompletedAtMs)
     }
 
-    private fun publish(hands: List<Hand>, width: Int, height: Int, timestampMs: Long) {
+    private fun publish(
+        hands: List<Hand>,
+        width: Int,
+        height: Int,
+        timestampMs: Long,
+        callbackCompletedAtMs: Long
+    ) {
         // Raw (un-smoothed) hands feed the hit-detection path so tap peaks are
         // preserved; smoothed hands feed the overlay so the skeleton is steady.
-        pendingRawFrames.offer(TimestampedHands(timestampMs, hands))
+        val frame = TimestampedHands(timestampMs, hands, callbackCompletedAtMs)
+        pendingRawFrames.offer(frame)
         val smoothed = if (hands.isEmpty()) hands else stabilizer.smooth(hands)
         _hands.value = smoothed
-        resultHandler?.invoke(smoothed)
+        resultHandler?.invoke(frame)
     }
 
     private fun onError(runtimeException: RuntimeException) {

@@ -135,8 +135,10 @@ fun MainScreen(
                 minCutoff = settings.smoothingMinCutoff,
                 beta = settings.smoothingBeta
             ),
-            resultHandler = {
-                visionMetricsRecorder.recordHandResult()?.let { metrics ->
+            resultHandler = { frame ->
+                visionMetricsRecorder.recordHandResult(
+                    frame.callbackCompletedAtMs - frame.timestampMs
+                )?.let { metrics ->
                     analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
                 }
             }
@@ -326,6 +328,11 @@ fun MainScreen(
                         // Consume each queued result with its own source timestamp; never
                         // pair landmarks from an older inference with this camera frame's ts.
                         for (rawFrame in handTracker.drainRawHandFrames()) {
+                            visionMetricsRecorder.recordHandCallbackToConsume(
+                                SystemClock.elapsedRealtime() - rawFrame.callbackCompletedAtMs
+                            )?.let { metrics ->
+                                analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
+                            }
                             val latestHands = rawFrame.hands.map { hand ->
                                 PreviewCoordinateMapper.forFillCenter(
                                     hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
@@ -356,9 +363,10 @@ fun MainScreen(
                                 // Tap mode: hits resolve to drum zones and fire the engine (M3).
                                 val triggers = hitArbiter.arbitrate(candidates, zs)
                                 if (triggers.isNotEmpty()) {
+                                    val candidateResolvedAtMs = SystemClock.elapsedRealtime()
                                     for (t in triggers) drumEngine.trigger(t.pad, t.velocity)
                                     visionMetricsRecorder.recordHitToAudioSubmit(
-                                        SystemClock.elapsedRealtime() - rawFrame.timestampMs
+                                        SystemClock.elapsedRealtime() - candidateResolvedAtMs
                                     )?.let { metrics ->
                                         analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
                                     }

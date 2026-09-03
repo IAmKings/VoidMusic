@@ -74,18 +74,41 @@ class FrameRouterTest {
 
     @Test
     fun `uncapped analysis accepts every frame`() {
-        assertEquals(true, shouldAnalyzeFrame(10L, 0L, frameCap = 0))
+        val gate = FrameCadenceGate(frameCap = 0)
+        assertEquals(true, gate.shouldSubmit(10L))
+        assertEquals(true, gate.shouldSubmit(11L))
     }
 
     @Test
     fun `first capped frame is always accepted`() {
-        assertEquals(true, shouldAnalyzeFrame(10L, Long.MIN_VALUE, frameCap = 20))
+        assertEquals(true, FrameCadenceGate(frameCap = 20).shouldSubmit(10L))
     }
 
     @Test
-    fun `capped analysis rejects frames before its interval`() {
-        val intervalNs = 1_000_000_000L / 20L
-        assertEquals(false, shouldAnalyzeFrame(intervalNs - 1L, 0L, frameCap = 20))
-        assertEquals(true, shouldAnalyzeFrame(intervalNs, 0L, frameCap = 20))
+    fun `30 FPS input retains a 20 FPS long term cap`() {
+        val gate = FrameCadenceGate(frameCap = 20)
+        val submitted = (0 until 30).count { frame ->
+            gate.shouldSubmit(frame * 1_000_000_000L / 30L)
+        }
+
+        assertEquals(20, submitted)
+    }
+
+    @Test
+    fun `60 FPS input retains a 20 FPS long term cap`() {
+        val gate = FrameCadenceGate(frameCap = 20)
+        val submitted = (0 until 60).count { frame ->
+            gate.shouldSubmit(frame * 1_000_000_000L / 60L)
+        }
+
+        assertEquals(20, submitted)
+    }
+
+    @Test
+    fun `capped gate resumes immediately after a source pause`() {
+        val gate = FrameCadenceGate(frameCap = 20)
+        assertEquals(true, gate.shouldSubmit(0L))
+        assertEquals(false, gate.shouldSubmit(10_000_000L))
+        assertEquals(true, gate.shouldSubmit(5_000_000_000L))
     }
 }

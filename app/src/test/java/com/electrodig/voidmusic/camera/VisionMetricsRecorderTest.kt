@@ -15,7 +15,9 @@ class VisionMetricsRecorderTest {
             sampleCapacity = 8
         )
 
-        assertNull(recorder.recordHandResult())
+        assertNull(recorder.recordHandResult(40))
+        recorder.recordHandCallbackToConsume(2)
+        recorder.recordHandCallbackToConsume(8)
         recorder.recordSegmentation(10)
         recorder.recordSegmentation(20)
         recorder.recordSegmentation(30)
@@ -25,10 +27,14 @@ class VisionMetricsRecorderTest {
         recorder.recordHitToAudioSubmit(27)
 
         nowMs = 1_000L
-        val metrics = recorder.recordHandResult()
+        val metrics = recorder.recordHandResult(60)
 
         requireNotNull(metrics)
         assertEquals(2f, metrics.handResultFps, 0.001f)
+        assertEquals(40L, metrics.captureToHandCallbackP50Ms)
+        assertEquals(60L, metrics.captureToHandCallbackP95Ms)
+        assertEquals(2L, metrics.handCallbackToConsumeP50Ms)
+        assertEquals(8L, metrics.handCallbackToConsumeP95Ms)
         assertEquals(20L, metrics.segmentationP50Ms)
         assertEquals(30L, metrics.segmentationP95Ms)
         assertEquals(5L, metrics.zoneCacheAgeP50Ms)
@@ -46,14 +52,14 @@ class VisionMetricsRecorderTest {
             sampleCapacity = 3
         )
 
-        recorder.recordHandResult()
+        recorder.recordHandResult(-5)
         recorder.recordSegmentation(-5)
         recorder.recordSegmentation(10)
         recorder.recordSegmentation(20)
         recorder.recordSegmentation(30)
 
         nowMs = 1_000L
-        val metrics = recorder.recordHandResult()
+        val metrics = recorder.recordHandResult(10)
 
         requireNotNull(metrics)
         assertEquals(20L, metrics.segmentationP50Ms)
