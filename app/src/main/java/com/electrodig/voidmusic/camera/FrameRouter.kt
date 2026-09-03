@@ -30,15 +30,14 @@ class FrameRouter(
 
     private var frameCount = 0
     private var lastFpsLogMs = SystemClock.elapsedRealtime()
-    private var lastSubmittedTimestampNs = Long.MIN_VALUE
+    private val cadenceGate = FrameCadenceGate(analysisFrameCap)
 
     override fun analyze(image: ImageProxy) {
         val timestampNs = image.imageInfo.timestamp
-        if (!shouldAnalyzeFrame(timestampNs, lastSubmittedTimestampNs, analysisFrameCap)) {
+        if (!cadenceGate.shouldSubmit(timestampNs)) {
             imageProxyConsumer(image)
             return
         }
-        lastSubmittedTimestampNs = timestampNs
         val raw = runCatching { image.toBitmap() }.getOrElse {
             Log.w(TAG, "Frame → bitmap failed", it)
             imageProxyConsumer(image)
@@ -95,15 +94,28 @@ class FrameRouter(
  */
 internal fun normalisedRotationDegrees(degrees: Int): Int = ((degrees % 360) + 360) % 360
 
-/** True when a frame is allowed through the configured analysis-rate gate. */
-internal fun shouldAnalyzeFrame(
-    timestampNs: Long,
-    lastSubmittedTimestampNs: Long,
-    frameCap: Int
-): Boolean {
-    if (frameCap <= 0 || lastSubmittedTimestampNs == Long.MIN_VALUE) return true
-    val intervalNs = 1_000_000_000L / frameCap
-    return timestampNs - lastSubmittedTimestampNs >= intervalNs
+/**
+ * Fixed-timeline frame gate. Unlike a "time since previous accepted frame"
+ * gate, this preserves the requested long-term cadence when camera timestamps
+ * do not divide evenly into the configured cap (for example, 30 FPS → 20 FPS).
+ */
+internal class FrameCadenceGate(private val frameCap: Int) {
+    private var nextDueTimestampNs = Long.MIN_VALUE
+
+    fun shouldSubmit(timestampNs: Long): Boolean {
+        if (frameCap <= 0) return true
+        if (nextDueTimestampNs == Long.MIN_VALUE) {
+            nextDueTimestampNs = timestampNs + intervalNs
+            return true
+        }
+        if (timestampNs < nextDueTimestampNs) return false
+
+        val intervalsBehind = (timestampNs - nextDueTimestampNs) / intervalNs + 1L
+        nextDueTimestampNs += intervalsBehind * intervalNs
+        return true
+    }
+
+    private val intervalNs = 1_000_000_000L / frameCap.coerceAtLeast(1)
 }
 
 /**

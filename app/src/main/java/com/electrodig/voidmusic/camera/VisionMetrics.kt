@@ -7,12 +7,19 @@ import kotlin.math.ceil
  * Low-frequency observability data for the real-time vision path. Values stay
  * at -1 until their corresponding stage has produced a sample.
  *
- * [hitToAudioSubmitP50Ms] measures CameraX source-frame time to the return of
+ * [captureToHandCallbackP50Ms] measures CameraX source-frame time to the
+ * MediaPipe result callback. [handCallbackToConsumeP50Ms] then identifies queue
+ * and camera-thread wait before the landmarks enter hit detection.
+ * [hitToAudioSubmitP50Ms] measures hit-candidate resolution to the return of
  * [DrumEngine.trigger]'s submission call. Speaker-output latency additionally
  * depends on the device audio path and requires external acoustic measurement.
  */
 data class VisionMetrics(
     val handResultFps: Float = -1f,
+    val captureToHandCallbackP50Ms: Long = -1L,
+    val captureToHandCallbackP95Ms: Long = -1L,
+    val handCallbackToConsumeP50Ms: Long = -1L,
+    val handCallbackToConsumeP95Ms: Long = -1L,
     val segmentationP50Ms: Long = -1L,
     val segmentationP95Ms: Long = -1L,
     val zoneCacheAgeP50Ms: Long = -1L,
@@ -32,6 +39,8 @@ class VisionMetricsRecorder(
     sampleCapacity: Int = SAMPLE_CAPACITY
 ) {
     private val segmentationMs = SampleWindow(sampleCapacity)
+    private val captureToHandCallbackMs = SampleWindow(sampleCapacity)
+    private val handCallbackToConsumeMs = SampleWindow(sampleCapacity)
     private val zoneCacheAgeMs = SampleWindow(sampleCapacity)
     private val hitToAudioSubmitMs = SampleWindow(sampleCapacity)
 
@@ -44,8 +53,15 @@ class VisionMetricsRecorder(
     }
 
     @Synchronized
-    fun recordHandResult(): VisionMetrics? {
+    fun recordHandResult(captureToCallbackMs: Long): VisionMetrics? {
         handResultCount++
+        this.captureToHandCallbackMs.add(captureToCallbackMs)
+        return snapshotIfDue(clockMs())
+    }
+
+    @Synchronized
+    fun recordHandCallbackToConsume(waitMs: Long): VisionMetrics? {
+        handCallbackToConsumeMs.add(waitMs)
         return snapshotIfDue(clockMs())
     }
 
@@ -78,6 +94,10 @@ class VisionMetricsRecorder(
 
         latest = VisionMetrics(
             handResultFps = handResultCount * 1_000f / elapsedMs,
+            captureToHandCallbackP50Ms = captureToHandCallbackMs.percentile(0.50),
+            captureToHandCallbackP95Ms = captureToHandCallbackMs.percentile(0.95),
+            handCallbackToConsumeP50Ms = handCallbackToConsumeMs.percentile(0.50),
+            handCallbackToConsumeP95Ms = handCallbackToConsumeMs.percentile(0.95),
             segmentationP50Ms = segmentationMs.percentile(0.50),
             segmentationP95Ms = segmentationMs.percentile(0.95),
             zoneCacheAgeP50Ms = zoneCacheAgeMs.percentile(0.50),

@@ -43,7 +43,9 @@ data class Hand(
 /** Raw hand landmarks tied to the exact CameraX frame that produced them. */
 data class TimestampedHands(
     val timestampMs: Long,
-    val hands: List<Hand>
+    val hands: List<Hand>,
+    /** Monotonic time at which MediaPipe delivered this result callback. */
+    val callbackCompletedAtMs: Long = timestampMs
 )
 
 /** Small thread-safe buffer that preserves the result/frame timestamp contract. */

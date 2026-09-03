@@ -83,9 +83,11 @@ fun HudPanel(
                 if (metrics.handResultFps >= 0f) {
                     item { StatChip("手部 FPS", "%.0f".format(metrics.handResultFps)) }
                 }
+                PercentileChip("采集→手部", metrics.captureToHandCallbackP50Ms, metrics.captureToHandCallbackP95Ms)
+                PercentileChip("回调→消费", metrics.handCallbackToConsumeP50Ms, metrics.handCallbackToConsumeP95Ms)
                 PercentileChip("分割", metrics.segmentationP50Ms, metrics.segmentationP95Ms)
                 PercentileChip("缓存", metrics.zoneCacheAgeP50Ms, metrics.zoneCacheAgeP95Ms)
-                PercentileChip("击打→提交", metrics.hitToAudioSubmitP50Ms, metrics.hitToAudioSubmitP95Ms)
+                PercentileChip("候选→提交", metrics.hitToAudioSubmitP50Ms, metrics.hitToAudioSubmitP95Ms)
             }
         }
     }

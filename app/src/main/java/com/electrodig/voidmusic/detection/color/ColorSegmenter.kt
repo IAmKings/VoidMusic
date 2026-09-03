@@ -1,9 +1,8 @@
 package com.electrodig.voidmusic.detection.color
 
 import android.graphics.Bitmap
-import android.graphics.Matrix
+import org.opencv.android.Utils
 import org.opencv.core.Core
-import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.Point as CvPoint
@@ -16,14 +15,15 @@ import org.opencv.imgproc.Imgproc
  * HSV colour segmentation + connected-component extraction (PRD §9.1).
  *
  * Pipeline per preset:
- *   1. RGBA bitmap → BGR Mat → HSV
+ *   1. RGBA bitmap → HSV
  *   2. [Imgproc.inRange] with the preset's [HsvRange] (handles hue wrap)
  *   3. optional morphological open+close to remove speckle
  *   4. [Imgproc.findContours] to get connected blobs
  *   5. filter by area / aspect ratio → emit a [DrumZone] per surviving blob
  *
- * Designed to be called from the CameraX ImageAnalysis thread; allocates and
- * releases OpenCV Mats per frame (acceptable for M2; pooling is a later opt).
+ * Designed to be called from the CameraX ImageAnalysis thread. The RGBA, HSV,
+ * and threshold Mats are retained and reused across frames to avoid Java pixel
+ * array copies and native allocation churn on the camera hot path.
  *
  * @param downsample scale factor applied to input bitmap before processing
  *                   (1.0 = full resolution, 0.5 = half, 0.25 = quarter).
@@ -36,6 +36,12 @@ class ColorSegmenter(
     private val lower = Scalar(0.0, 0.0, 0.0, 0.0)
     private val upper = Scalar(0.0, 0.0, 0.0, 0.0)
     private var morphologyKernel: Mat? = null
+    // MainScreen creates this segmenter before its LaunchedEffect loads OpenCV.
+    // Native Mats must therefore be allocated on the first actual segmentation,
+    // never in the Kotlin constructor.
+    private var rgba: Mat? = null
+    private var hsv: Mat? = null
+    private val thresholdWorkspaces = ArrayList<ThresholdWorkspace>()
     private var closed = false
 
     /**
@@ -61,69 +67,64 @@ class ColorSegmenter(
             val frameArea = width.toFloat() * height
             val minArea = frameArea * config.minAreaFraction
             val maxArea = frameArea * config.maxAreaFraction
-            val bgr = bitmapToBgrMat(bmp)
-            val hsv = Mat()
-            try {
-                Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
-                val zones = ArrayList<DrumZone>(8)
-                var zoneId = (frameId * 100).toInt()
-                val kernel = if (config.morphEnabled) morphologyKernel() else null
+            val rgbaMat = rgba ?: Mat().also { rgba = it }
+            val hsvMat = hsv ?: Mat().also { hsv = it }
+            Utils.bitmapToMat(bmp, rgbaMat)
+            // OpenCV's RGB→HSV converter accepts 3- and 4-channel RGB(A) input;
+            // alpha is ignored, so this remains a single direct RGBA bitmap→HSV step.
+            Imgproc.cvtColor(rgbaMat, hsvMat, Imgproc.COLOR_RGB2HSV)
+            val zones = ArrayList<DrumZone>(8)
+            var zoneId = (frameId * 100).toInt()
+            val kernel = if (config.morphEnabled) morphologyKernel() else null
 
-                for (preset in config.presets) {
-                    val mask = threshold(hsv, preset.range)
-                    try {
-                        if (kernel != null) {
-                            Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel)
-                            Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel)
-                        }
-
-                        val contours = ArrayList<MatOfPoint>()
-                        val hierarchy = Mat()
-                        try {
-                            Imgproc.findContours(
-                                mask, contours, hierarchy,
-                                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
-                            )
-                            for (contour in contours) {
-                                val area = Imgproc.contourArea(contour)
-                                if (area < minArea || area > maxArea) continue
-                                val cvRect = Imgproc.boundingRect(contour)
-                                val aspect = cvRect.width.toFloat() / cvRect.height.toFloat().coerceAtLeast(1f)
-                                if (aspect !in config.aspectRatio) continue
-
-                                val moment = Imgproc.moments(contour)
-                                val cx = (moment.m10 / moment.m00).toFloat()
-                                val cy = (moment.m01 / moment.m00).toFloat()
-                                zones += DrumZone(
-                                    id = zoneId++,
-                                    center = DrumZone.Point(cx, cy),
-                                    area = area.toFloat(),
-                                    width = cvRect.width,
-                                    height = cvRect.height,
-                                    presetName = preset.name,
-                                    mappedPad = preset.mappedPad,
-                                    normalizedCenter = DrumZone.Point(cx / width, cy / height),
-                                    normalizedBox = DrumZone.Rect(
-                                        cvRect.x.toFloat() / width,
-                                        cvRect.y.toFloat() / height,
-                                        (cvRect.x + cvRect.width).toFloat() / width,
-                                        (cvRect.y + cvRect.height).toFloat() / height
-                                    )
-                                )
-                            }
-                        } finally {
-                            hierarchy.release()
-                            contours.forEach(MatOfPoint::release)
-                        }
-                    } finally {
-                        mask.release()
-                    }
+            ensureThresholdWorkspaces(config.presets)
+            for ((index, preset) in config.presets.withIndex()) {
+                val mask = threshold(hsvMat, preset.range, thresholdWorkspaces[index])
+                if (kernel != null) {
+                    Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel)
+                    Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel)
                 }
-                return zones
-            } finally {
-                hsv.release()
-                bgr.release()
+
+                val contours = ArrayList<MatOfPoint>()
+                val hierarchy = Mat()
+                try {
+                    Imgproc.findContours(
+                        mask, contours, hierarchy,
+                        Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+                    )
+                    for (contour in contours) {
+                        val area = Imgproc.contourArea(contour)
+                        if (area < minArea || area > maxArea) continue
+                        val cvRect = Imgproc.boundingRect(contour)
+                        val aspect = cvRect.width.toFloat() / cvRect.height.toFloat().coerceAtLeast(1f)
+                        if (aspect !in config.aspectRatio) continue
+
+                        val moment = Imgproc.moments(contour)
+                        val cx = (moment.m10 / moment.m00).toFloat()
+                        val cy = (moment.m01 / moment.m00).toFloat()
+                        zones += DrumZone(
+                            id = zoneId++,
+                            center = DrumZone.Point(cx, cy),
+                            area = area.toFloat(),
+                            width = cvRect.width,
+                            height = cvRect.height,
+                            presetName = preset.name,
+                            mappedPad = preset.mappedPad,
+                            normalizedCenter = DrumZone.Point(cx / width, cy / height),
+                            normalizedBox = DrumZone.Rect(
+                                cvRect.x.toFloat() / width,
+                                cvRect.y.toFloat() / height,
+                                (cvRect.x + cvRect.width).toFloat() / width,
+                                (cvRect.y + cvRect.height).toFloat() / height
+                            )
+                        )
+                    }
+                } finally {
+                    hierarchy.release()
+                    contours.forEach(MatOfPoint::release)
+                }
             }
+            return zones
         } finally {
             if (bmp !== bitmap) bmp.recycle()
         }
@@ -138,12 +139,18 @@ class ColorSegmenter(
         if (closed) return
         morphologyKernel?.release()
         morphologyKernel = null
+        thresholdWorkspaces.forEach(ThresholdWorkspace::release)
+        thresholdWorkspaces.clear()
+        rgba?.release()
+        rgba = null
+        hsv?.release()
+        hsv = null
         closed = true
     }
 
     /** Apply [range] to an HSV Mat, accounting for hue wrap-around at the 0/180 boundary. */
-    private fun threshold(hsv: Mat, range: HsvRange): Mat {
-        val base = Mat()
+    private fun threshold(hsv: Mat, range: HsvRange, workspace: ThresholdWorkspace): Mat {
+        val base = workspace.base
         if (range.hMin > range.hMax) {
             // Hue wraps past 180 (e.g. red hMin=165..hMax=15 straddles the 0/180
             // boundary). Match TWO segments: hMin..180 and 0..hMax.
@@ -154,10 +161,9 @@ class ColorSegmenter(
             // Segment 2: low end (e.g. 0..15), OR-ed in.
             setScalar(lower, 0, range.sMin, range.vMin)
             setScalar(upper, range.hMax, range.sMax, range.vMax)
-            val wrap = Mat()
+            val wrap = workspace.requireWrap()
             Core.inRange(hsv, lower, upper, wrap)
             Core.bitwise_or(base, wrap, base)
-            wrap.release()
         } else {
             // Normal single segment.
             setScalar(lower, range.hMin, range.sMin, range.vMin)
@@ -167,40 +173,42 @@ class ColorSegmenter(
         return base
     }
 
+    private fun ensureThresholdWorkspaces(presets: List<HsvPreset>) {
+        while (thresholdWorkspaces.size < presets.size) {
+            thresholdWorkspaces += ThresholdWorkspace()
+        }
+        while (thresholdWorkspaces.size > presets.size) {
+            thresholdWorkspaces.removeAt(thresholdWorkspaces.lastIndex).release()
+        }
+        presets.forEachIndexed { index, preset ->
+            thresholdWorkspaces[index].setWrapRequired(preset.range.hMin > preset.range.hMax)
+        }
+    }
+
     private fun setScalar(target: Scalar, h: Int, s: Int, v: Int) {
         target.`val`[0] = h.toDouble()
         target.`val`[1] = s.toDouble()
         target.`val`[2] = v.toDouble()
     }
 
-    /** Convert an Android Bitmap (RGBA) into an OpenCV BGR 3-channel Mat. */
-    private fun bitmapToBgrMat(bitmap: Bitmap): Mat {
-        val w = bitmap.width
-        val h = bitmap.height
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        // Convert ARGB int[] → RGBA byte[] for OpenCV CV_8UC4.
-        val bytes = ByteArray(w * h * 4)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            bytes[i * 4]     = ((p shr 16) and 0xff).toByte() // R
-            bytes[i * 4 + 1] = ((p shr 8) and 0xff).toByte()  // G
-            bytes[i * 4 + 2] = (p and 0xff).toByte()          // B
-            bytes[i * 4 + 3] = ((p shr 24) and 0xff).toByte() // A
-        }
-        val rgba = Mat(h, w, CvType.CV_8UC4)
-        try {
-            rgba.put(0, 0, bytes)
-            val bgr = Mat()
-            try {
-                Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
-                return bgr
-            } catch (e: Throwable) {
-                bgr.release()
-                throw e
+    private class ThresholdWorkspace {
+        val base = Mat()
+        private var wrap: Mat? = null
+
+        fun setWrapRequired(required: Boolean) {
+            if (required && wrap == null) wrap = Mat()
+            if (!required) {
+                wrap?.release()
+                wrap = null
             }
-        } finally {
-            rgba.release()
+        }
+
+        fun requireWrap(): Mat = requireNotNull(wrap)
+
+        fun release() {
+            base.release()
+            wrap?.release()
+            wrap = null
         }
     }
 }

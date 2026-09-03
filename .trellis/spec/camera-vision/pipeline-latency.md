@@ -88,6 +88,24 @@ under `STRATEGY_KEEP_ONLY_LATEST` can stall the next frame delivery.
   1. Running it on a separate executor/coroutine (fire-and-forget the zones).
   2. Running it sub-rate (every Nth frame; zones are spatially slow-moving).
 
+### Analysis Frame Caps
+
+`analysisFrameCap` is a long-term target, not a minimum elapsed time since the
+previous accepted source frame. Use a stateful deadline gate: accept the first
+frame, retain a `nextDueTimestampNs`, and advance that deadline by whole
+intervals after each accepted frame. Resetting the deadline to the accepted
+frame causes 30 FPS input with a 20 FPS cap to degrade to 15 FPS.
+
+### OpenCV Bitmap Conversion
+
+`Utils.bitmapToMat()` writes the Android bitmap to a reusable 4-channel Mat.
+On the bundled OpenCV 4.13 binding, use `COLOR_RGB2HSV` directly on that
+3-or-4-channel input (alpha is ignored); do not copy through `IntArray` /
+`ByteArray` or convert RGBA→BGR first. Reuse RGBA, HSV, and threshold Mats and
+release every retained Mat from `ColorSegmenter.close()`. `ColorSegmenter` is
+created during Compose composition before the `LaunchedEffect` that loads
+OpenCV, so all native `Mat` allocation must be lazy inside `segment()`.
+
 ## Common Mistakes
 
 ### Mistake: Forgetting to rotate the bitmap
