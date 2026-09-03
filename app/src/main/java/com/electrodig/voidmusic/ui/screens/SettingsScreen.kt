@@ -48,6 +48,7 @@ import com.electrodig.voidmusic.session.SessionViewModel
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenGuide: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SessionViewModel = viewModel()
 ) {
@@ -154,6 +155,15 @@ fun SettingsScreen(
                     onValueChange = { viewModel.setSmoothing(settings.smoothingMinCutoff, it) },
                     valueRange = 0.02f..0.1f
                 )
+            }
+
+            HorizontalDivider()
+
+            OutlinedButton(
+                onClick = onOpenGuide,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("查看使用指南")
             }
 
             HorizontalDivider()

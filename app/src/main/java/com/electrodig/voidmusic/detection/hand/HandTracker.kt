@@ -41,13 +41,12 @@ class HandTracker(
     private val _hands = MutableStateFlow<List<Hand>>(emptyList())
     val hands: StateFlow<List<Hand>> = _hands.asStateFlow()
 
-    /** Latest hands BEFORE stabilizer smoothing (raw MediaPipe output) — used
-     *  by the hit-detection path, which needs the un-filtered fingertip
-     *  velocity to detect fast taps. Smoothing flattens the tap peak and makes
-     *  strikes invisible to HitDetector (see spec camera-vision/pipeline-latency
-     *  "OneEuro vs tap detection"). */
-    private val _rawHands = MutableStateFlow<List<Hand>>(emptyList())
-    val rawHands: StateFlow<List<Hand>> = _rawHands.asStateFlow()
+    /**
+     * Raw MediaPipe output for the hit path. A small bounded queue preserves
+     * timestamp/landmark pairing until the camera pipeline consumes it, while
+     * preventing delayed inference results from growing into latency backlog.
+     */
+    private val pendingRawFrames = TimestampedHandsQueue(MAX_PENDING_RAW_FRAMES)
 
     /**
      * Lazily builds the [HandLandmarker]. Call after the camera is ready or on
@@ -126,12 +125,15 @@ class HandTracker(
     /** Convert a monotonic-nanos timestamp (from [ImageProxy.imageInfo]) to ms. */
     fun timestampMs(nanos: Long): Long = nanos / NANOS_PER_MS
 
+    /** Drains every unprocessed raw result in source timestamp order. */
+    fun drainRawHandFrames(): List<TimestampedHands> = pendingRawFrames.drain()
+
     /** Release native resources (PRD §4.4: release on background/cleanup). */
     fun close() {
         landmarker?.close()
         landmarker = null
         _hands.value = emptyList()
-        _rawHands.value = emptyList()
+        pendingRawFrames.clear()
     }
 
     private fun onResult(result: HandLandmarkerResult, input: MPImage) {
@@ -139,7 +141,7 @@ class HandTracker(
         val height = input.height
         val landmarkSets = result.landmarks()
         if (landmarkSets.isEmpty()) {
-            publish(emptyList(), width, height)
+            publish(emptyList(), width, height, result.timestampMs())
             return
         }
 
@@ -162,13 +164,13 @@ class HandTracker(
                 imageHeight = height
             )
         }
-        publish(hands, width, height)
+        publish(hands, width, height, result.timestampMs())
     }
 
-    private fun publish(hands: List<Hand>, width: Int, height: Int) {
+    private fun publish(hands: List<Hand>, width: Int, height: Int, timestampMs: Long) {
         // Raw (un-smoothed) hands feed the hit-detection path so tap peaks are
         // preserved; smoothed hands feed the overlay so the skeleton is steady.
-        _rawHands.value = hands
+        pendingRawFrames.offer(TimestampedHands(timestampMs, hands))
         val smoothed = if (hands.isEmpty()) hands else stabilizer.smooth(hands)
         _hands.value = smoothed
         resultHandler?.invoke(smoothed)
@@ -182,5 +184,6 @@ class HandTracker(
         private const val TAG = "HandTracker"
         private const val MODEL_PATH = "hand_landmarker.task"
         private const val NANOS_PER_MS = 1_000_000L
+        private const val MAX_PENDING_RAW_FRAMES = 4
     }
 }

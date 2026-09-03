@@ -13,14 +13,20 @@ import com.electrodig.voidmusic.ui.screens.SettingsScreen
  * onboarding → main (which itself handles the permission gate) → settings.
  */
 @Composable
-fun VoidMusicNavHost(startRoute: String = Destination.Onboarding.route) {
+fun VoidMusicNavHost(
+    startRoute: String,
+    onOnboardingComplete: () -> Unit
+) {
     val nav = rememberNavController()
 
     NavHost(navController = nav, startDestination = startRoute) {
         composable(Destination.Onboarding.route) {
             OnboardingScreen(onComplete = {
-                nav.navigate(Destination.Main.route) {
-                    popUpTo(Destination.Onboarding.route) { inclusive = true }
+                onOnboardingComplete()
+                if (!nav.popBackStack(Destination.Main.route, inclusive = false)) {
+                    nav.navigate(Destination.Main.route) {
+                        popUpTo(Destination.Onboarding.route) { inclusive = true }
+                    }
                 }
             })
         }
@@ -28,7 +34,12 @@ fun VoidMusicNavHost(startRoute: String = Destination.Onboarding.route) {
             MainScreen(onOpenSettings = { nav.navigate(Destination.Settings.route) })
         }
         composable(Destination.Settings.route) {
-            SettingsScreen(onBack = { nav.popBackStack() })
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onOpenGuide = {
+                    nav.navigate(Destination.Onboarding.route) { launchSingleTop = true }
+                }
+            )
         }
     }
 }

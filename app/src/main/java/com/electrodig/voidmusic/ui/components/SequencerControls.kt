@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Pause
@@ -39,7 +40,9 @@ fun SequencerControls(
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-        tonalElevation = 3.dp
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        tonalElevation = 4.dp,
+        shadowElevation = 8.dp
     ) {
         Column(
             modifier = Modifier
@@ -59,7 +62,7 @@ fun SequencerControls(
                         contentDescription = if (isPlaying) "停止" else "播放"
                     )
                 }
-                Spacer(Modifier.size(12.dp))
+                Spacer(Modifier.size(10.dp))
                 Text("BPM", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.size(8.dp))
                 Slider(
@@ -74,7 +77,7 @@ fun SequencerControls(
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
-                Spacer(Modifier.size(12.dp))
+                Spacer(Modifier.size(10.dp))
                 FilledIconButton(
                     onClick = onClear,
                     colors = IconButtonDefaults.filledIconButtonColors(

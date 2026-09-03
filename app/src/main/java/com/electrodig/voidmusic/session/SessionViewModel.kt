@@ -46,6 +46,10 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     val settingsLoaded: StateFlow<Boolean> = repo.settings
         .map { true }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    /** One atomic state prevents choosing a route from StateFlow's temporary default. */
+    val onboardingState: StateFlow<OnboardingState> = repo.onboardingCompleted
+        .map { completed -> OnboardingState(isLoaded = true, completed = completed) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, OnboardingState())
 
     // Auto-switch to LOW tier when battery saver is active (PRD R6.2).
     init {
@@ -158,6 +162,10 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { repo.reset() }
     }
 
+    fun completeOnboarding() {
+        viewModelScope.launch { repo.markOnboardingCompleted() }
+    }
+
     private fun repoUpdate(transform: (Settings) -> Settings) {
         viewModelScope.launch { repo.update(transform) }
     }
@@ -198,3 +206,8 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         _flashedZoneIds.value = _flashedZoneIds.value - zoneIds
     }
 }
+
+data class OnboardingState(
+    val isLoaded: Boolean = false,
+    val completed: Boolean = false
+)

@@ -10,3 +10,6 @@ sealed class Destination(val route: String) {
     data object Main : Destination("main")
     data object Settings : Destination("settings")
 }
+
+internal fun initialDestination(onboardingCompleted: Boolean): String =
+    if (onboardingCompleted) Destination.Main.route else Destination.Onboarding.route

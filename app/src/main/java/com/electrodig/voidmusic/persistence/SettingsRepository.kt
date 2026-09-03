@@ -3,6 +3,7 @@ package com.electrodig.voidmusic.persistence
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -11,7 +12,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 
 /**
- * Persists [Settings] via DataStore Preferences (PRD F8).
+ * Persists [Settings] and app-level completion state via DataStore Preferences (PRD F8).
  *
  * Settings are serialised to a single JSON string under one key. This keeps the
  * schema flexible (no per-field migration) and the data is tiny.
@@ -24,6 +25,11 @@ class SettingsRepository(private val context: Context) {
         prefs[KEY_SETTINGS]?.let {
             runCatching { json.decodeFromString<Settings>(it) }.getOrNull()
         } ?: Settings.DEFAULT
+    }
+
+    /** App-level completion marker kept separate from resettable performance settings. */
+    val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_ONBOARDING_COMPLETED] ?: false
     }
 
     suspend fun save(settings: Settings) {
@@ -42,7 +48,13 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    /** Reset everything to defaults (PRD F8.2). */
+    suspend fun markOnboardingCompleted() {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_ONBOARDING_COMPLETED] = true
+        }
+    }
+
+    /** Reset performance settings to defaults without clearing app-level completion state. */
     suspend fun reset() {
         save(Settings.DEFAULT)
     }
@@ -50,5 +62,6 @@ class SettingsRepository(private val context: Context) {
     companion object {
         private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ods_settings")
         private val KEY_SETTINGS = stringPreferencesKey("settings_json")
+        private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
     }
 }

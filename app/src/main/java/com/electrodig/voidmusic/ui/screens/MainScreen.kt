@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,13 +20,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,6 +56,8 @@ import com.electrodig.voidmusic.camera.CameraModule
 import com.electrodig.voidmusic.camera.CameraPreview
 import com.electrodig.voidmusic.camera.FrameRouter
 import com.electrodig.voidmusic.camera.PreviewCoordinateMapper
+import com.electrodig.voidmusic.camera.VisionMetrics
+import com.electrodig.voidmusic.camera.VisionMetricsRecorder
 import com.electrodig.voidmusic.detection.color.ColorSegmenter
 import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.color.HsvRange
@@ -72,11 +79,13 @@ import com.electrodig.voidmusic.ui.components.HandOverlay
 import com.electrodig.voidmusic.ui.components.HudPanel
 import com.electrodig.voidmusic.ui.components.SequencerControls
 import com.electrodig.voidmusic.ui.components.StepSequencerOverlay
+import com.electrodig.voidmusic.ui.components.TapControlDock
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.collect
@@ -89,7 +98,7 @@ import kotlinx.coroutines.flow.collect
  *  - a calibration FAB toggles the 4-point perspective overlay (PRD F1.4),
  *  - HSV colour controls tune segmentation live (PRD F4.1).
  */
-@OptIn(ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     modifier: Modifier = Modifier,
@@ -103,6 +112,13 @@ fun MainScreen(
     val settings by viewModel.settings.collectAsState()
     val settingsLoaded by viewModel.settingsLoaded.collectAsState()
     val perfConfig = PerformanceConfig.forLevel(settings.performanceLevel)
+    val analysisEvents = remember {
+        MutableSharedFlow<AnalysisEvent>(
+            extraBufferCapacity = 32,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST
+        )
+    }
+    val visionMetricsRecorder = remember(settings.performanceLevel) { VisionMetricsRecorder() }
 
     // HandTracker and segmenter are keyed by performance level so tier changes
     // take effect (recreates with new resolution / delegate / maxHands / downsample).
@@ -118,7 +134,12 @@ fun MainScreen(
             stabilizer = OneEuroHandStabilizer(
                 minCutoff = settings.smoothingMinCutoff,
                 beta = settings.smoothingBeta
-            )
+            ),
+            resultHandler = {
+                visionMetricsRecorder.recordHandResult()?.let { metrics ->
+                    analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
+                }
+            }
         )
     }
     val segmenter = remember(settings.performanceLevel) {
@@ -145,9 +166,10 @@ fun MainScreen(
 
     var activePresetIndex by remember { mutableIntStateOf(0) }
     var calibrating by remember { mutableStateOf(false) }
-    var colorPanelOpen by remember { mutableStateOf(true) }
+    var showColorControls by remember { mutableStateOf(false) }
     var pickingColor by remember { mutableStateOf(false) }
     var sessionRestored by remember { mutableStateOf(false) }
+    var visionMetrics by remember(settings.performanceLevel) { mutableStateOf(VisionMetrics()) }
     val modeHolder = remember { AtomicReference(session.mode) }
     LaunchedEffect(session.mode) { modeHolder.set(session.mode) }
     val hapticHolder = remember { AtomicReference(settings.hapticEnabled) }
@@ -158,16 +180,10 @@ fun MainScreen(
     // detection runs every frame using the most recent cached zones.
     val zoneFrameCounter = remember { intArrayOf(0) }
     val cachedZones = remember { AtomicReference<List<DrumZone>>(emptyList()) }
+    val cachedZonesTimestampMs = remember { AtomicLong(Long.MIN_VALUE) }
     val zoneTracker = remember(settings.performanceLevel) { ZoneTracker() }
     val viewportRef = remember { AtomicReference<PreviewViewport?>(null) }
     val pickerRequestRef = remember { AtomicReference<PickerRequest?>(null) }
-    val analysisEvents = remember {
-        MutableSharedFlow<AnalysisEvent>(
-            extraBufferCapacity = 32,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST
-        )
-    }
-
     // The camera executor only emits immutable events. Compose/Android View work
     // is deliberately consumed here on the main dispatcher.
     LaunchedEffect(analysisEvents) {
@@ -175,6 +191,7 @@ fun MainScreen(
             when (event) {
                 is AnalysisEvent.Zones -> viewModel.setZones(event.zones)
                 is AnalysisEvent.Fps -> viewModel.setAnalysisFps(event.value)
+                is AnalysisEvent.Metrics -> visionMetrics = event.value
                 is AnalysisEvent.Hit -> {
                     viewModel.flashZones(event.zoneIds)
                     if (event.haptic) performTapHaptic(view)
@@ -224,10 +241,15 @@ fun MainScreen(
     }
     DisposableEffect(Unit) {
         onDispose {
-            handTracker.close()
             drumEngine.stop()
             transport.release()
         }
+    }
+    DisposableEffect(handTracker) {
+        onDispose { handTracker.close() }
+    }
+    DisposableEffect(segmenter) {
+        onDispose { segmenter.close() }
     }
 
     // Bridge hand count into HUD state.
@@ -280,61 +302,79 @@ fun MainScreen(
                             }
                         }
                         if (zoneFrameCounter[0] % 3 == 0) {
+                            val segmentStartMs = SystemClock.elapsedRealtime()
                             val trackedZones = zoneTracker.update(
                                 segmenter.segment(bitmap, configHolder.get()),
                                 ts
                             )
+                            visionMetricsRecorder.recordSegmentation(
+                                SystemClock.elapsedRealtime() - segmentStartMs
+                            )?.let { metrics ->
+                                analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
+                            }
                             cachedZones.set(trackedZones)
+                            cachedZonesTimestampMs.set(ts)
                             analysisEvents.tryEmit(AnalysisEvent.Zones(trackedZones.map(mapper::map)))
                         }
                         val zs = cachedZones.get().map(mapper::map)
-                        // Read raw (un-smoothed) hands directly from the StateFlow.
-                        // StateFlow.value is thread-safe. Map it into PreviewView
-                        // coordinates before hit testing so it shares the zone/grid
-                        // coordinate system.
-                        val latestHands = handTracker.rawHands.value.map { hand ->
-                            PreviewCoordinateMapper.forFillCenter(
-                                hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
-                            )?.map(hand) ?: hand
+                        val cacheTimestampMs = cachedZonesTimestampMs.get()
+                        if (zs.isNotEmpty() && cacheTimestampMs != Long.MIN_VALUE) {
+                            visionMetricsRecorder.recordZoneCacheAge(ts - cacheTimestampMs)
+                                ?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
                         }
-                        val candidates = hitDetector.update(latestHands, ts)
-                        if (modeHolder.get() == StudioMode.STEP) {
-                            // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
-                            if (candidates.isNotEmpty()) {
-                                val tip = latestHands.firstOrNull()?.fingertip
-                                if (tip != null && gridScanner.isCalibrated()) {
-                                    val cell = gridScanner.locateCell(
-                                        GridScanner.GridPoint(tip.x, tip.y)
-                                    )
-                                    if (cell != null) {
-                                        val key = cell.row.toLong() * 100 + cell.step
-                                        val last = lastCellToggleMs[key] ?: 0L
-                                        if (ts - last >= STEP_TOGGLE_COOLDOWN_MS) {
-                                            transport.toggleStep(cell.row, cell.step)
-                                            lastCellToggleMs[key] = ts
-                                            analysisEvents.tryEmit(
-                                                AnalysisEvent.StepToggle(hapticHolder.get())
-                                            )
+                        // MediaPipe returns hands asynchronously and may drop input frames.
+                        // Consume each queued result with its own source timestamp; never
+                        // pair landmarks from an older inference with this camera frame's ts.
+                        for (rawFrame in handTracker.drainRawHandFrames()) {
+                            val latestHands = rawFrame.hands.map { hand ->
+                                PreviewCoordinateMapper.forFillCenter(
+                                    hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
+                                )?.map(hand) ?: hand
+                            }
+                            val candidates = hitDetector.update(latestHands, rawFrame.timestampMs)
+                            if (modeHolder.get() == StudioMode.STEP) {
+                                // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
+                                if (gridScanner.isCalibrated()) {
+                                    for (candidate in candidates) {
+                                        val cell = gridScanner.locateCell(
+                                            GridScanner.GridPoint(candidate.point.x, candidate.point.y)
+                                        )
+                                        if (cell != null) {
+                                            val key = cell.row.toLong() * 100 + cell.step
+                                            val last = lastCellToggleMs[key] ?: 0L
+                                            if (candidate.timestampMs - last >= STEP_TOGGLE_COOLDOWN_MS) {
+                                                transport.toggleStep(cell.row, cell.step)
+                                                lastCellToggleMs[key] = candidate.timestampMs
+                                                analysisEvents.tryEmit(
+                                                    AnalysisEvent.StepToggle(hapticHolder.get())
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        } else {
-                            // Tap mode: hits resolve to drum zones and fire the engine (M3).
-                            val triggers = hitArbiter.arbitrate(candidates, zs)
-                            if (triggers.isNotEmpty()) {
-                                for (t in triggers) drumEngine.trigger(t.pad, t.velocity)
-                                analysisEvents.tryEmit(
-                                    AnalysisEvent.Hit(
-                                        zoneIds = triggers.map { it.zoneId },
-                                        haptic = hapticHolder.get()
+                            } else {
+                                // Tap mode: hits resolve to drum zones and fire the engine (M3).
+                                val triggers = hitArbiter.arbitrate(candidates, zs)
+                                if (triggers.isNotEmpty()) {
+                                    for (t in triggers) drumEngine.trigger(t.pad, t.velocity)
+                                    visionMetricsRecorder.recordHitToAudioSubmit(
+                                        SystemClock.elapsedRealtime() - rawFrame.timestampMs
+                                    )?.let { metrics ->
+                                        analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
+                                    }
+                                    analysisEvents.tryEmit(
+                                        AnalysisEvent.Hit(
+                                            zoneIds = triggers.map { it.zoneId },
+                                            haptic = hapticHolder.get()
+                                        )
                                     )
-                                )
+                                }
                             }
                         }
                     }
                 ),
                 imageProxyConsumer = { proxy -> proxy.close() },
+                analysisFrameCap = perfConfig.analysisFrameCap,
                 onFpsUpdate = { fps -> analysisEvents.tryEmit(AnalysisEvent.Fps(fps)) }
             )
         )
@@ -439,6 +479,21 @@ fun MainScreen(
                             }
                         }
                 ) { }
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 108.dp),
+                    color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.72f),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+                ) {
+                    Text(
+                        text = "点按取景器中的目标颜色",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        color = androidx.compose.ui.graphics.Color.White,
+                        style = androidx.compose.material3.MaterialTheme.typography.labelLarge
+                    )
+                }
             }
 
             if (!calibrating) {
@@ -477,6 +532,7 @@ fun MainScreen(
                 signalStrength = session.signalStrength,
                 onModeSelected = viewModel::setMode,
                 fps = session.analysisFps,
+                metrics = visionMetrics,
                 modifier = Modifier
                     .statusBarsPadding()
                     .align(Alignment.TopCenter)
@@ -492,7 +548,7 @@ fun MainScreen(
                 )
             }
 
-            // Right-side FABs: calibration / settings.
+            // Compact shortcuts leave the viewfinder unobscured during performance.
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -500,21 +556,35 @@ fun MainScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ExtendedFloatingActionButton(
-                    text = { Text(if (calibrating) "完成校准" else "校准") },
-                    icon = { Icon(Icons.Default.Tune, contentDescription = null) },
-                    onClick = { calibrating = !calibrating }
+                SmallFloatingActionButton(
+                    onClick = { calibrating = !calibrating },
+                    containerColor = if (calibrating) {
+                        androidx.compose.material3.MaterialTheme.colorScheme.primary
+                    } else {
+                        androidx.compose.material3.MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                    }
                 )
-                ExtendedFloatingActionButton(
-                    text = { Text("设置") },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    onClick = onOpenSettings
-                )
+                {
+                    Icon(
+                        Icons.Default.Tune,
+                        contentDescription = if (calibrating) "退出校准" else "开始校准"
+                    )
+                }
+                SmallFloatingActionButton(
+                    onClick = onOpenSettings,
+                    containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = "打开设置")
+                }
             }
 
             // Bottom controls: HSV in TAP mode (F4.1), transport in STEP mode (F3.4/F3.5).
             if (!calibrating) {
-                Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                ) {
                     if (session.mode == StudioMode.STEP) {
                         SequencerControls(
                             bpm = sequence.bpm,
@@ -523,23 +593,10 @@ fun MainScreen(
                             onPlayToggle = { if (sequence.isPlaying) transport.stop() else transport.play() },
                             onClear = transport::clear
                         )
-                    } else if (colorPanelOpen) {
-                        ColorControls(
-                            presets = detectionConfig.presets,
-                            activeIndex = activePresetIndex,
-                            onActiveChange = { activePresetIndex = it },
-                            onPickColor = { pickingColor = true },
-                            isPicking = pickingColor,
-                            onActiveRangeChange = { range: HsvRange ->
-                                viewModel.updateDetectionConfig { cfg ->
-                                    val presets = cfg.presets.toMutableList()
-                                    if (activePresetIndex in presets.indices) {
-                                        presets[activePresetIndex] =
-                                            presets[activePresetIndex].copy(range = range)
-                                    }
-                                    cfg.copy(presets = presets)
-                                }
-                            }
+                    } else {
+                        TapControlDock(
+                            preset = detectionConfig.presets.getOrNull(activePresetIndex),
+                            onOpenControls = { showColorControls = true }
                         )
                     }
                 }
@@ -554,6 +611,31 @@ fun MainScreen(
                     ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                     appSettingsLauncher.launch(intent)
                 }
+            )
+        }
+    }
+
+    if (granted && showColorControls && !calibrating) {
+        ModalBottomSheet(onDismissRequest = { showColorControls = false }) {
+            ColorControls(
+                presets = detectionConfig.presets,
+                activeIndex = activePresetIndex,
+                onActiveChange = { activePresetIndex = it },
+                onPickColor = {
+                    showColorControls = false
+                    pickingColor = true
+                },
+                isPicking = false,
+                onActiveRangeChange = { range: HsvRange ->
+                    viewModel.updateDetectionConfig { cfg ->
+                        val presets = cfg.presets.toMutableList()
+                        if (activePresetIndex in presets.indices) {
+                            presets[activePresetIndex] = presets[activePresetIndex].copy(range = range)
+                        }
+                        cfg.copy(presets = presets)
+                    }
+                },
+                modifier = Modifier.navigationBarsPadding()
             )
         }
     }
@@ -580,6 +662,7 @@ private data class PreviewViewport(val width: Int, val height: Int)
 private sealed interface AnalysisEvent {
     data class Zones(val zones: List<DrumZone>) : AnalysisEvent
     data class Fps(val value: Float) : AnalysisEvent
+    data class Metrics(val value: VisionMetrics) : AnalysisEvent
     data class Hit(val zoneIds: List<Int>, val haptic: Boolean) : AnalysisEvent
     data class StepToggle(val haptic: Boolean) : AnalysisEvent
     data class ColorPicked(val presetIndex: Int, val range: HsvRange) : AnalysisEvent
