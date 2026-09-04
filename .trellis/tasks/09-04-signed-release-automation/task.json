@@ -23,7 +23,10 @@
   "relatedFiles": [
     "app/build.gradle.kts",
     ".github/workflows/android.yml",
-    ".gitignore"
+    ".gitignore",
+    "app/proguard-rules.pro",
+    "scripts/prepare_release.sh",
+    "scripts/validate_release_shrinker.sh"
   ],
   "notes": "",
   "meta": {}

@@ -42,5 +42,5 @@
 - [x] README 与项目 Release Signing 规范已同步。
 - [x] Debug 全量门禁与签名 Release 构建通过。
 - [x] 功能分支已推送，GitHub `workflow_dispatch` 运行 `33847138811` 通过；签名 APK、SHA-256 与构建信息已上传并独立下载复核。
-- [ ] 安装签名 Release 到 PJZ110 并完成演奏/后台恢复；当前被旧 Debug 签名冲突阻塞，卸载会清除本地数据，等待用户明确授权。
+- [ ] 签名 Release 已安装到 PJZ110；冷启动、MediaPipe 初始化和后台恢复通过，等待用户确认四色快速切换与声音主观验收。
 - [ ] 在验证提交后创建并推送 `v0.1.0-m8` 标签，核对自动公开 GitHub Release。

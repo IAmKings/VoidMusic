@@ -1,5 +1,6 @@
 {"file": ".trellis/tasks/09-04-signed-release-automation/prd.md", "reason": "Verify signed Release and automation acceptance criteria"}
 {"file": ".trellis/tasks/09-04-signed-release-automation/design.md", "reason": "Verify local and CI signing data flow and publication boundaries"}
 {"file": ".trellis/tasks/09-04-signed-release-automation/implement.md", "reason": "Verify implementation and remaining device/tag validation steps"}
+{"file": ".trellis/tasks/09-04-signed-release-automation/postmortem.md", "reason": "Verify Release-only MediaPipe/R8 failures cannot recur silently"}
 {"file": ".trellis/spec/backend/release-signing.md", "reason": "Project contract for release signing and automated publication"}
 {"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Project quality and verification requirements"}

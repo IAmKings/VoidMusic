@@ -37,6 +37,8 @@ Decode the keystore only into the ephemeral Runner temp directory. Never echo se
 
 - The tag is `v<APK versionName>` and must match the built APK exactly.
 - `scripts/prepare_release.sh` is the shared local/CI validator for APK signature, expected certificate, version metadata, checksum, and build information.
+- `scripts/validate_release_shrinker.sh` must verify the Flogger stack-inspection frames and protobuf-javalite generated fields in the Release R8 outputs before an artifact can be uploaded.
+- Keep Flogger's stack-inspection chain intact and retain fields on every `GeneratedMessageLite` subclass. Without these contracts, a minified APK can launch while MediaPipe hand tracking crashes or silently fails to initialize.
 - A tag run publishes a normal GitHub Release automatically. Milestone/internal-test releases are public but use `latest=false`; they are neither Draft nor Pre-release.
 - Manual workflow dispatch produces the verified Actions Artifact only and must not create a GitHub Release.
 - Stable-phase device acceptance gates are added before publication without weakening signing or metadata validation.
@@ -46,5 +48,7 @@ Decode the keystore only into the ephemeral Runner temp directory. Never echo se
 - Run Debug unit tests, Lint, and native Debug build without signing inputs.
 - Prove a Release lifecycle task fails cleanly when signing inputs are absent.
 - Build a signed Release and run `scripts/prepare_release.sh` with the expected tag.
+- Run `scripts/validate_release_shrinker.sh` against the generated Release mapping and seeds.
+- Install the minified signed APK on a physical device and verify MediaPipe initialization, hand tracking, audio triggering, and background recovery; a build-only check cannot cover reflection/stack-inspection failures.
 - Verify no keystore, password file, `keystore.properties`, or generated release directory is tracked.
 - Ensure all four Gradle environment names and all four GitHub Secret names match across Gradle, workflow, README, and this spec.

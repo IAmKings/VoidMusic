@@ -43,8 +43,8 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
 
-      - name: Validate release automation script
-        run: bash -n scripts/prepare_release.sh
+      - name: Validate release automation scripts
+        run: bash -n scripts/prepare_release.sh scripts/validate_release_shrinker.sh
 
       - name: Run unit tests, lint, and debug build
         run: >
@@ -122,6 +122,9 @@ jobs:
           :app:assembleRelease
           --no-daemon
           --stacktrace
+
+      - name: Verify Release shrinker contracts
+        run: bash scripts/validate_release_shrinker.sh
 
       - name: Verify and prepare release files
         id: prepare

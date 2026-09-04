@@ -72,8 +72,8 @@
 
 ## Local Verification Evidence
 
-- 签名 Release：`app-release.apk`，46,869,227 bytes（约 44.7 MiB），低于 80 MB 门槛。
-- APK SHA-256：`179e273e8239f5ddf89346ea860df79dd7711396223a5f25d75f223e85a4d59c`。
+- 最终修复后的签名 Release：`app-release.apk`，46,901,995 bytes（约 44.7 MiB），低于 80 MB 门槛。
+- 最终本地 APK SHA-256：`32036741e72b4ba3fa5da30b8e8d1d60ecf1afdeceff33b19ca1e233cb5a17ea`。
 - `apksigner`：v2 签名验证通过，1 个 signer，证书 SHA-256 与 Signing Identity 一致。
 - APK 元数据：`versionName=0.1.0-m8`、`versionCode=3`；`v0.1.0-m8` 通过，错误标签以退出码 65 阻断。
 - 缺少本地签名配置时 `preReleaseBuild` 明确失败；通用 `assemble` 依赖图包含同一门禁，不能绕过。
@@ -82,3 +82,5 @@
 - GitHub `workflow_dispatch` 运行 `33847138811` 全部通过；Debug 门禁与签名 Release 作业分别通过，手动流程按设计跳过公开 Release。
 - 远程构件 `void-music-release-8` 已独立下载复核：ZIP 完整、APK SHA-256 为 `18c6d33fcb3a74659483ea3b93f2414b1e575884a4aa82ddfef04ac8643255f8` 且 `SHA256SUMS` 校验通过；`BUILD-INFO.txt` 指向提交 `86bf15a196e900f587182086ddf996bb250a90e6`，APK 为 `versionName=0.1.0-m8`、`versionCode=3`。
 - 远程 APK 经本地 `apksigner` 二次验证：v2 签名有效、仅 1 个 signer、RSA 4096，证书 SHA-256 与 Signing Identity 一致。
+- PJZ110 真机暴露并验证修复了两项仅在压缩 Release 出现的问题：Flogger 调用栈被 R8 改写导致 MediaPipe `Graph` 初始化崩溃；Protobuf Lite 字段名被改写导致手部模型 GPU/CPU 均初始化失败。
+- 最终修复包冷启动超过原 15 秒崩溃窗口后进程存活、`MainActivity` 保持前台、crash 缓冲区为空且 `HandTracker` 无初始化错误；进入后台再恢复后 PID 保持不变且无新增错误。
