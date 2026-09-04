@@ -139,7 +139,8 @@ jobs:
       - name: Upload signed release files
         uses: actions/upload-artifact@v4
         with:
-          name: void-music-release-${{ github.ref_name }}
+          # run_number is numeric and remains valid even when a branch ref contains '/'.
+          name: void-music-release-${{ github.run_number }}
           path: release-dist/*
           if-no-files-found: error
           retention-days: 90
