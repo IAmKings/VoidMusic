@@ -34,7 +34,7 @@ data class PerformanceConfig(
             )
             PerformanceLevel.MEDIUM -> PerformanceConfig(
                 cameraResolution = Size(640, 480),
-                analysisFrameCap = 20,
+                analysisFrameCap = 24,
                 mediaPipeDelegate = Delegate.GPU,
                 maxHands = 2,
                 colorDownsample = 0.5f

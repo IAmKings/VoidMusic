@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.electrodig.voidmusic.audio.DrumEngine
+import com.electrodig.voidmusic.audio.AudioBackend
 import com.electrodig.voidmusic.audio.BuiltInKits
 import com.electrodig.voidmusic.audio.Transport
 import com.electrodig.voidmusic.camera.CameraModule
@@ -69,6 +70,8 @@ import com.electrodig.voidmusic.detection.hand.HandTracker
 import com.electrodig.voidmusic.detection.hand.OneEuroHandStabilizer
 import com.electrodig.voidmusic.detection.hit.HitArbiter
 import com.electrodig.voidmusic.detection.hit.HitDetector
+import com.electrodig.voidmusic.detection.hit.HitSnapshot
+import com.electrodig.voidmusic.detection.hit.TapHitProcessor
 import com.electrodig.voidmusic.persistence.PerformanceConfig
 import com.electrodig.voidmusic.session.SessionViewModel
 import com.electrodig.voidmusic.session.StudioMode
@@ -119,6 +122,11 @@ fun MainScreen(
         )
     }
     val visionMetricsRecorder = remember(settings.performanceLevel) { VisionMetricsRecorder() }
+    val modeHolder = remember { AtomicReference(StudioMode.TAP) }
+    val hapticHolder = remember { AtomicReference(true) }
+    val tapSnapshotRef = remember { AtomicReference(HitSnapshot()) }
+    val tapHitProcessorRef = remember { AtomicReference<TapHitProcessor?>(null) }
+    val drumEngineRef = remember { AtomicReference<DrumEngine?>(null) }
 
     // HandTracker and segmenter are keyed by performance level so tier changes
     // take effect (recreates with new resolution / delegate / maxHands / downsample).
@@ -141,6 +149,26 @@ fun MainScreen(
                 )?.let { metrics ->
                     analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
                 }
+                val consumedAtMs = SystemClock.elapsedRealtime()
+                visionMetricsRecorder.recordHandCallbackToConsume(
+                    consumedAtMs - frame.callbackCompletedAtMs
+                )?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
+                if (modeHolder.get() == StudioMode.TAP) {
+                    val triggers = tapHitProcessorRef.get()
+                        ?.process(frame, consumedAtMs, tapSnapshotRef.get())
+                        .orEmpty()
+                    if (triggers.isNotEmpty()) {
+                        val candidateResolvedAtMs = SystemClock.elapsedRealtime()
+                        val engine = drumEngineRef.get()
+                        for (trigger in triggers) engine?.trigger(trigger.pad, trigger.velocity)
+                        visionMetricsRecorder.recordHitToAudioSubmit(
+                            SystemClock.elapsedRealtime() - candidateResolvedAtMs
+                        )?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
+                        analysisEvents.tryEmit(
+                            AnalysisEvent.Hit(triggers.map { it.zoneId }, hapticHolder.get())
+                        )
+                    }
+                }
             }
         )
     }
@@ -150,6 +178,12 @@ fun MainScreen(
     val gridScanner = remember { GridScanner() }
     val drumEngine = remember { DrumEngine(context) }
     val transport = remember { Transport(drumEngine) }
+    val tapHitProcessor = remember(settings.hitVelocityThreshold, settings.hitCooldownMs) {
+        TapHitProcessor(
+            detector = HitDetector(settings.hitVelocityThreshold, settings.hitCooldownMs),
+            arbiter = HitArbiter()
+        )
+    }
     val hitDetector = remember(settings.hitVelocityThreshold, settings.hitCooldownMs) {
         HitDetector(
             velocityThreshold = settings.hitVelocityThreshold,
@@ -172,10 +206,10 @@ fun MainScreen(
     var pickingColor by remember { mutableStateOf(false) }
     var sessionRestored by remember { mutableStateOf(false) }
     var visionMetrics by remember(settings.performanceLevel) { mutableStateOf(VisionMetrics()) }
-    val modeHolder = remember { AtomicReference(session.mode) }
     LaunchedEffect(session.mode) { modeHolder.set(session.mode) }
-    val hapticHolder = remember { AtomicReference(settings.hapticEnabled) }
     LaunchedEffect(settings.hapticEnabled) { hapticHolder.set(settings.hapticEnabled) }
+    LaunchedEffect(drumEngine) { drumEngineRef.set(drumEngine) }
+    LaunchedEffect(tapHitProcessor) { tapHitProcessorRef.set(tapHitProcessor) }
     val lastCellToggleMs = remember { HashMap<Long, Long>() }
     // Color segmentation runs every Nth frame (zones are spatially slow-moving;
     // running it every frame starves the hand path on low-FPS devices). Hit
@@ -316,6 +350,7 @@ fun MainScreen(
                             }
                             cachedZones.set(trackedZones)
                             cachedZonesTimestampMs.set(ts)
+                            tapSnapshotRef.set(HitSnapshot(trackedZones, ts))
                             analysisEvents.tryEmit(AnalysisEvent.Zones(trackedZones.map(mapper::map)))
                         }
                         val zs = cachedZones.get().map(mapper::map)
@@ -328,11 +363,7 @@ fun MainScreen(
                         // Consume each queued result with its own source timestamp; never
                         // pair landmarks from an older inference with this camera frame's ts.
                         for (rawFrame in handTracker.drainRawHandFrames()) {
-                            visionMetricsRecorder.recordHandCallbackToConsume(
-                                SystemClock.elapsedRealtime() - rawFrame.callbackCompletedAtMs
-                            )?.let { metrics ->
-                                analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
-                            }
+                            if (modeHolder.get() != StudioMode.STEP) continue
                             val latestHands = rawFrame.hands.map { hand ->
                                 PreviewCoordinateMapper.forFillCenter(
                                     hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
@@ -541,6 +572,12 @@ fun MainScreen(
                 onModeSelected = viewModel::setMode,
                 fps = session.analysisFps,
                 metrics = visionMetrics,
+                audioBackendLabel = when (drumEngine.backend) {
+                    AudioBackend.NATIVE_OBOE -> "Oboe"
+                    AudioBackend.SOUND_POOL -> "SoundPool"
+                    AudioBackend.NONE -> ""
+                },
+                droppedTriggerCount = drumEngine.droppedTriggerCount(),
                 modifier = Modifier
                     .statusBarsPadding()
                     .align(Alignment.TopCenter)

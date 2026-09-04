@@ -73,6 +73,46 @@ class HitDetectorTest {
         assertEquals(1, detector.update(listOf(hand(0.5f, 0.4f)), 650).size)
     }
 
+    @Test
+    fun `continuous downward motion only produces one candidate`() {
+        val detector = HitDetector(velocityThreshold = 0.6f, cooldownMs = 110)
+        detector.update(listOf(hand(0.5f, 0.20f)), 0)
+        assertEquals(1, detector.update(listOf(hand(0.5f, 0.32f)), 40).size)
+        assertTrue(detector.update(listOf(hand(0.5f, 0.44f)), 80).isEmpty())
+        assertTrue(detector.update(listOf(hand(0.5f, 0.56f)), 120).isEmpty())
+    }
+
+    @Test
+    fun `lift and a fast downstroke can retrigger after rearm delay`() {
+        val detector = HitDetector(velocityThreshold = 0.6f, cooldownMs = 110)
+        detector.update(listOf(hand(0.5f, 0.20f)), 0)
+        assertEquals(1, detector.update(listOf(hand(0.5f, 0.32f)), 40).size)
+        assertTrue(detector.update(listOf(hand(0.5f, 0.24f)), 150).isEmpty())
+        assertEquals(1, detector.update(listOf(hand(0.5f, 0.36f)), 190).size)
+    }
+
+    @Test
+    fun `early lift is remembered for a 160 bpm sixteenth note`() {
+        val detector = HitDetector()
+        detector.update(listOf(hand(0.5f, 0.20f)), 0)
+        assertEquals(1, detector.update(listOf(hand(0.5f, 0.32f)), 40).size)
+
+        // Lift arrives before the rearm delay, then the next downstroke lands
+        // 94 ms after the first hit (a sixteenth note at roughly 160 BPM).
+        assertTrue(detector.update(listOf(hand(0.5f, 0.24f)), 70).isEmpty())
+        assertEquals(1, detector.update(listOf(hand(0.5f, 0.36f)), 134).size)
+    }
+
+    @Test
+    fun `same handedness keeps its tracker across a fast lateral transition`() {
+        val detector = HitDetector(velocityThreshold = 0.5f, cooldownMs = 60)
+        detector.update(listOf(hand(0.20f, 0.20f, "Right")), 0)
+        assertEquals(1, detector.update(listOf(hand(0.20f, 0.32f, "Right")), 40).size)
+        detector.update(listOf(hand(0.46f, 0.24f, "Right")), 70)
+
+        assertEquals(1, detector.update(listOf(hand(0.72f, 0.36f, "Right")), 134).size)
+    }
+
     private fun hand(x: Float, y: Float, handedness: String = "Right") =
         TestFixtures.handAtFingertip(x, y, handedness)
 

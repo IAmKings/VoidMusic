@@ -22,9 +22,7 @@ class SettingsRepository(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     val settings: Flow<Settings> = context.dataStore.data.map { prefs ->
-        prefs[KEY_SETTINGS]?.let {
-            runCatching { json.decodeFromString<Settings>(it) }.getOrNull()
-        } ?: Settings.DEFAULT
+        decodeSettings(prefs[KEY_SETTINGS])
     }
 
     /** App-level completion marker kept separate from resettable performance settings. */
@@ -34,19 +32,28 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun save(settings: Settings) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_SETTINGS] = json.encodeToString(Settings.serializer(), settings)
+            prefs[KEY_SETTINGS] = json.encodeToString(
+                Settings.serializer(),
+                settings.withCurrentHitTuning()
+            )
         }
     }
 
     /** Patch a subset of fields without clobbering the rest. */
     suspend fun update(transform: (Settings) -> Settings) {
         context.dataStore.edit { prefs ->
-            val current = prefs[KEY_SETTINGS]?.let {
-                runCatching { json.decodeFromString<Settings>(it) }.getOrNull()
-            } ?: Settings.DEFAULT
-            prefs[KEY_SETTINGS] = json.encodeToString(Settings.serializer(), transform(current))
+            val current = decodeSettings(prefs[KEY_SETTINGS])
+            prefs[KEY_SETTINGS] = json.encodeToString(
+                Settings.serializer(),
+                transform(current).withCurrentHitTuning()
+            )
         }
     }
+
+    private fun decodeSettings(encoded: String?): Settings = encoded
+        ?.let { runCatching { json.decodeFromString<Settings>(it) }.getOrNull() }
+        ?.withCurrentHitTuning()
+        ?: Settings.DEFAULT
 
     suspend fun markOnboardingCompleted() {
         context.dataStore.edit { prefs ->

@@ -2,6 +2,7 @@ package com.electrodig.voidmusic.persistence
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class SettingsSerializationTest {
@@ -34,5 +35,44 @@ class SettingsSerializationTest {
         assertEquals(4, restored.sequenceGrid.size)
         assertEquals(16, restored.sequenceGrid.first().size)
         assertEquals(emptyList<CalibrationPoint>(), restored.calibration)
+    }
+
+    @Test
+    fun `legacy hit defaults migrate to current musical tuning`() {
+        val legacy = json.decodeFromString<Settings>(
+            """{"hitVelocityThreshold":0.6,"hitCooldownMs":110}"""
+        )
+
+        val migrated = legacy.withCurrentHitTuning()
+
+        assertEquals(0.5f, migrated.hitVelocityThreshold)
+        assertEquals(60L, migrated.hitCooldownMs)
+        assertEquals(CURRENT_HIT_TUNING_VERSION, migrated.hitTuningVersion)
+    }
+
+    @Test
+    fun `current tuning preserves user customization`() {
+        val current = Settings(
+            hitVelocityThreshold = 0.8f,
+            hitCooldownMs = 150,
+            hitTuningVersion = CURRENT_HIT_TUNING_VERSION
+        )
+
+        assertSame(current, current.withCurrentHitTuning())
+    }
+
+    @Test
+    fun `legacy customized tuning is versioned without being overwritten`() {
+        val legacyCustom = Settings(
+            hitVelocityThreshold = 0.8f,
+            hitCooldownMs = 150,
+            hitTuningVersion = 0
+        )
+
+        val migrated = legacyCustom.withCurrentHitTuning()
+
+        assertEquals(0.8f, migrated.hitVelocityThreshold)
+        assertEquals(150L, migrated.hitCooldownMs)
+        assertEquals(CURRENT_HIT_TUNING_VERSION, migrated.hitTuningVersion)
     }
 }

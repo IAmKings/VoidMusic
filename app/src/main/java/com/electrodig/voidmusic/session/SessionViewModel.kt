@@ -135,7 +135,7 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setHitCooldownMs(value: Long) {
-        repoUpdate { it.copy(hitCooldownMs = value.coerceIn(80L, 500L)) }
+        repoUpdate { it.copy(hitCooldownMs = value.coerceIn(50L, 500L)) }
     }
 
     fun setSmoothing(minCutoff: Float, beta: Float) {

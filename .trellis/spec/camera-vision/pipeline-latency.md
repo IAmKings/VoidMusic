@@ -176,8 +176,82 @@ bitmap. The 0° short-circuit avoids allocation in the aligned case.
 3. Make it a user setting.
 
 **Decision**: Option 2 as the new default; Option 3 as future enhancement.
-Hit detection already has `cooldownMs=120` debounce, so stabilizer jitter
+Hit detection already has a 60 ms lift-gated rearm interval, so stabilizer jitter
 tolerance is acceptable.
+
+## Scenario: Musical Tap Hit Timing Contract
+
+### 1. Scope / Trigger
+
+- Applies when changing `HitDetector`, `TapHitProcessor`, performance frame caps,
+  colour-segmentation cadence, or persisted hit-response settings.
+- Prevents a valid lift or static drum zone from falling into a timing gap
+  between asynchronous hand results and sub-rate colour segmentation.
+
+### 2. Signatures
+
+- `HitDetector.update(hands: List<Hand>, timestampMs: Long): List<HitCandidate>`
+- `TapHitProcessor.process(frame: TimestampedHands, consumedAtMs: Long, snapshot: HitSnapshot): List<TriggerEvent>`
+- `Settings.withCurrentHitTuning(): Settings`
+
+### 3. Contracts
+
+| Field / state | Contract |
+|---|---|
+| `HitDetector.cooldownMs` | Default 60 ms; it is a minimum rearm delay, not a fixed post-hit mute window. |
+| `Tracker.liftObserved` | Once a lift/deceleration is observed after a hit, retain it until rearm or tracker expiry. |
+| Same-zone retrigger | Default 70 ms in `HitArbiter`; different zones do not share this cooldown. |
+| Hand-result age | `consumedAtMs - frame.timestampMs` uses a 140 ms target, recent baseline + 40 ms jitter margin, and a 260 ms hard ceiling. Callback completion time is metrics-only. |
+| Zone age | `consumedAtMs - snapshot.zoneTimestampMs` must be within `0..260` ms. |
+| Medium frame cap | 24 FPS target; colour segmentation remains every third accepted frame. |
+| Persisted tuning | Version 1 defaults are threshold `0.50` and rearm `60 ms`; legacy default pairs migrate once, custom pairs are preserved. |
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Hand or zone age is negative | Drop the frame; monotonic-clock domains do not match. |
+| Hand source age suddenly exceeds the adaptive budget | Drop before mutating gesture state; let a sustained baseline increase adapt within the 260 ms hard ceiling. |
+| Hand source age exceeds 260 ms | Always drop before mutating gesture state. |
+| Zone source age exceeds 260 ms | Drop before mutating gesture state. |
+| Lift occurs before 60 ms has elapsed | Record `liftObserved`; do not arm yet. |
+| Next downstroke arrives after the delay | Arm and allow that same sample to produce a candidate. |
+| Motion continues downward without a lift | Produce no duplicate candidate. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: hit at 40 ms, lift at 70 ms, next downstroke at 134 ms -> two hits
+  (about a sixteenth note at 160 BPM).
+- Base: one continuous downward trajectory -> one hit only.
+- Bad: forget a lift because it happened before the delay, or compare
+  `consumedAtMs` only with `callbackCompletedAtMs`; both create late or missing notes.
+
+### 6. Tests Required
+
+- `HitDetectorTest`: early lift retained, 94 ms retrigger, continuous-down suppression,
+  lateral same-hand transition, and hand-order changes.
+- `TapHitProcessorTest`: transient-stale rejection, sustained 186–208 ms recovery,
+  260 ms hand/zone hard boundaries, 16 FPS three-frame cache interval, and alternating colours.
+- `SettingsSerializationTest`: legacy defaults migrate and current/custom tuning is preserved.
+- On-device: same-colour roll, four-colour alternation, two-hand alternation, and
+  HUD callback-to-consume P95 at or below 15 ms.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```kotlin
+if (rearmDelayPassed && liftedThisFrame) tracker.armed = true
+val age = consumedAtMs - frame.callbackCompletedAtMs
+```
+
+#### Correct
+
+```kotlin
+if (liftedThisFrame) tracker.liftObserved = true
+if (rearmDelayPassed && tracker.liftObserved) tracker.armed = true
+val age = consumedAtMs - frame.timestampMs
+```
 
 ## Validation
 
