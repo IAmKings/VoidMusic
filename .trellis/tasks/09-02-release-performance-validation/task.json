@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "09-04-signed-release-automation"
+  ],
   "parent": "09-02-prd-acceptance-closure",
   "relatedFiles": [],
   "notes": "",

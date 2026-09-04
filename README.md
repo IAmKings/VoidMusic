@@ -80,6 +80,32 @@ enableNativeBuild=true
 ```
 需先通过 SDK Manager 安装 NDK 27.2.12479018。未启用时自动使用 SoundPool 降级方案。
 
+### 签名 Release 与自动发布
+
+Release 构建必须提供专用签名，不会回退生成可误传的 unsigned 候选包。本地复制
+`keystore.properties.example` 为未跟踪的 `keystore.properties`，填写仓库外的
+keystore、密码文件与 alias 路径后运行：
+
+```bash
+./gradlew -PenableNativeBuild=true assembleRelease
+bash scripts/prepare_release.sh \
+  app/build/outputs/apk/release/app-release.apk \
+  release-dist \
+  v0.1.0-m8
+```
+
+GitHub Actions Release 作业需要配置以下 Repository Secrets：
+
+- `ANDROID_RELEASE_KEYSTORE_BASE64`
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
+
+推送与 APK `versionName` 一致的标签（如 `v0.1.0-m8`）后，工作流会自动完成签名、
+证书/版本校验、SHA-256 生成，并创建普通公开 GitHub Release。内测里程碑不标记为
+Latest；进入稳定期后再加入三档设备验收硬门禁。正式 keystore 一旦用于分发，后续
+覆盖升级必须持续使用同一证书，并在加密离线位置保留至少一份备份。
+
 ## 性能档位
 
 | 档位 | 相机分辨率 | 分析帧率 | MediaPipe | 手部数 | 降采样 |

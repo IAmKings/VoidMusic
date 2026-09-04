@@ -1,0 +1,30 @@
+{
+  "id": "signed-release-automation",
+  "name": "signed-release-automation",
+  "title": "签名 Release 与自动发布闭环",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "kuluoluo",
+  "assignee": "kuluoluo",
+  "createdAt": "2026-09-04",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-release-performance-validation",
+  "relatedFiles": [
+    "app/build.gradle.kts",
+    ".github/workflows/android.yml",
+    ".gitignore"
+  ],
+  "notes": "",
+  "meta": {}
+}
