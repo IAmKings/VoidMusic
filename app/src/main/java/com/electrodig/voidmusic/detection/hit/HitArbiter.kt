@@ -12,7 +12,7 @@ import com.electrodig.voidmusic.detection.color.DrumZone
 class HitArbiter(
     private val padTracker: PadTracker = PadTracker(),
     /** Min ms between two triggers on the SAME zone. */
-    private val retriggerCooldownMs: Long = 90
+    private val retriggerCooldownMs: Long = 70
 ) {
     // Last trigger timestamp per zone id.
     private val lastTrigger = mutableMapOf<Int, Long>()

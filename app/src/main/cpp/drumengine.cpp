@@ -333,6 +333,12 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeTrigger(
     }
 }
 
+JNIEXPORT jlong JNICALL
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeDroppedTriggerCount(
+        JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jlong>(g_engine.droppedTriggers.load(std::memory_order_relaxed));
+}
+
 JNIEXPORT void JNICALL
 Java_com_electrodig_voidmusic_audio_DrumEngine_nativeSetVolume(
         JNIEnv* /*env*/, jobject /*thiz*/, jfloat volume) {

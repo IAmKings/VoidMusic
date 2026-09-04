@@ -88,6 +88,11 @@ class DrumEngine(private val context: Context) {
     /** True when native Oboe is active (not the SoundPool fallback). */
     val isNativeAvailable: Boolean get() = backend == AudioBackend.NATIVE_OBOE
 
+    /** Native queue overflows since the active stream was started; 0 for fallback. */
+    fun droppedTriggerCount(): Long = if (backend == AudioBackend.NATIVE_OBOE) {
+        runCatching { nativeDroppedTriggerCount() }.getOrDefault(0L)
+    } else 0L
+
     /** Trigger [pad] immediately at [velocity] (0..1). No-op if not ready. */
     fun trigger(pad: DrumPad, velocity: Float) {
         if (!ready) return
@@ -181,6 +186,7 @@ class DrumEngine(private val context: Context) {
     ): Boolean
 
     private external fun nativeTrigger(padOrdinal: Int, velocity: Float)
+    private external fun nativeDroppedTriggerCount(): Long
     private external fun nativeSetVolume(volume: Float)
     private external fun nativeStop()
 }

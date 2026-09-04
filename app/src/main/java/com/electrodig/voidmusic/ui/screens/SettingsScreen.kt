@@ -138,11 +138,11 @@ fun SettingsScreen(
                     onValueChange = viewModel::setHitVelocityThreshold,
                     valueRange = 0.2f..2.0f
                 )
-                Text("防抖 ${settings.hitCooldownMs} ms")
+                Text("击打复位 ${settings.hitCooldownMs} ms")
                 Slider(
                     value = settings.hitCooldownMs.toFloat(),
                     onValueChange = { viewModel.setHitCooldownMs(it.toLong()) },
-                    valueRange = 80f..500f
+                    valueRange = 50f..500f
                 )
                 Text("手部平滑 ${"%.1f".format(settings.smoothingMinCutoff)} / ${"%.2f".format(settings.smoothingBeta)}")
                 Slider(

@@ -46,6 +46,14 @@ class HitArbiterTest {
     }
 
     @Test
+    fun `default cooldown supports a 160 bpm sixteenth note`() {
+        val musical = HitArbiter()
+        assertEquals(1, musical.arbitrate(listOf(candidateAt(0.5f, 0.5f, ts = 0)), zones).size)
+        assertTrue(musical.arbitrate(listOf(candidateAt(0.5f, 0.5f, ts = 60)), zones).isEmpty())
+        assertEquals(1, musical.arbitrate(listOf(candidateAt(0.5f, 0.5f, ts = 94)), zones).size)
+    }
+
+    @Test
     fun `two candidates on two different zones both trigger`() {
         val z1 = TestFixtures.zoneAt(id = 1, cx = 0.3f, cy = 0.3f, pad = DrumPad.KICK)
         val z2 = TestFixtures.zoneAt(id = 2, cx = 0.7f, cy = 0.7f, pad = DrumPad.SNARE)

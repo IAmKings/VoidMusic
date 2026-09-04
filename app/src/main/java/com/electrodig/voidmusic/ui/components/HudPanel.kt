@@ -47,7 +47,9 @@ fun HudPanel(
     onModeSelected: (StudioMode) -> Unit,
     modifier: Modifier = Modifier,
     fps: Float = -1f,
-    metrics: VisionMetrics = VisionMetrics()
+    metrics: VisionMetrics = VisionMetrics(),
+    audioBackendLabel: String = "",
+    droppedTriggerCount: Long = 0L
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
         // Semi-transparent scrim so HUD text stays readable over the camera feed.
@@ -82,6 +84,10 @@ fun HudPanel(
                 }
                 if (metrics.handResultFps >= 0f) {
                     item { StatChip("手部 FPS", "%.0f".format(metrics.handResultFps)) }
+                }
+                if (audioBackendLabel.isNotEmpty()) {
+                    item { StatChip("音频", audioBackendLabel) }
+                    item { StatChip("丢音", droppedTriggerCount.toString()) }
                 }
                 PercentileChip("采集→手部", metrics.captureToHandCallbackP50Ms, metrics.captureToHandCallbackP95Ms)
                 PercentileChip("回调→消费", metrics.handCallbackToConsumeP50Ms, metrics.handCallbackToConsumeP95Ms)

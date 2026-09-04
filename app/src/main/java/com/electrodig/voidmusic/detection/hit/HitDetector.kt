@@ -1,7 +1,6 @@
 package com.electrodig.voidmusic.detection.hit
 
 import com.electrodig.voidmusic.detection.hand.Hand
-import com.electrodig.voidmusic.detection.hand.NormalizedLandmark
 /**
  * Detects "tap" gestures from fingertip trajectories (PRD §9.4).
  *
@@ -12,18 +11,22 @@ import com.electrodig.voidmusic.detection.hand.NormalizedLandmark
  */
 class HitDetector(
     /** Minimum downward speed in normalised display units per second. */
-    private val velocityThreshold: Float = 0.6f,
-    /** Minimum ms between two candidates from the same fingertip (debounce). */
-    private val cooldownMs: Long = 250,
+    private val velocityThreshold: Float = 0.5f,
+    /** Minimum ms before a finger that lifted can arm the next tap. */
+    private val cooldownMs: Long = DEFAULT_REARM_MS,
     /** Retain a missing fingertip briefly so result ordering cannot reset cooldown. */
     private val trackerTtlMs: Long = 500,
     /** A tracker cannot jump farther than this between adjacent frames. */
-    private val maxMatchDistance: Float = 0.25f
+    private val maxMatchDistance: Float = 0.32f
 ) {
     private data class Tracker(
         val id: Int,
+        var handedness: String,
         var lastSample: Sample? = null,
-        var lastCandidateMs: Long = Long.MIN_VALUE / 2
+        var lastCandidateMs: Long = Long.MIN_VALUE / 2,
+        var armed: Boolean = true,
+        var liftObserved: Boolean = false,
+        var triggerY: Float = 0f
     )
 
     private data class Sample(val x: Float, val y: Float, val ts: Long)
@@ -44,7 +47,9 @@ class HitDetector(
             val tip = hand.fingertip
             val tracker = trackers.values
                 .asSequence()
-                .filter { it.id !in claimed }
+                .filter {
+                    it.id !in claimed && handednessCompatible(it.handedness, hand.handedness)
+                }
                 .mapNotNull { candidate ->
                     val last = candidate.lastSample ?: return@mapNotNull null
                     val dx = last.x - tip.x
@@ -54,8 +59,9 @@ class HitDetector(
                 }
                 .minByOrNull { it.second }
                 ?.first
-                ?: Tracker(nextTrackerId++).also { trackers[it.id] = it }
+                ?: Tracker(nextTrackerId++, hand.handedness).also { trackers[it.id] = it }
             claimed += tracker.id
+            if (hand.handedness != UNKNOWN_HANDEDNESS) tracker.handedness = hand.handedness
 
             val previous = tracker.lastSample
             val now = Sample(tip.x, tip.y, timestampMs)
@@ -65,16 +71,38 @@ class HitDetector(
             val dtMs = timestampMs - previous.ts
             if (dtMs <= 0L) return@forEach
             val downwardSpeed = (tip.y - previous.y) * 1_000f / dtMs
-            val cooled = timestampMs - tracker.lastCandidateMs >= cooldownMs
-            if (downwardSpeed >= velocityThreshold && cooled) {
+            if (!tracker.armed) {
+                val rearmDelayPassed = timestampMs - tracker.lastCandidateMs >= cooldownMs
+                val lifted = downwardSpeed <= 0f || tip.y <= tracker.triggerY - REARM_LIFT_DISTANCE
+                // The lift commonly arrives one frame before the musical rearm
+                // deadline. Remember it so the following downstroke is not lost.
+                if (lifted) tracker.liftObserved = true
+                if (rearmDelayPassed && tracker.liftObserved) {
+                    tracker.armed = true
+                    tracker.liftObserved = false
+                }
+            }
+            if (tracker.armed && downwardSpeed >= velocityThreshold) {
                 out += HitCandidate(
                     point = HitCandidate.Point(tip.x, tip.y),
                     velocity = downwardSpeed,
                     timestampMs = timestampMs
                 )
                 tracker.lastCandidateMs = timestampMs
+                tracker.triggerY = tip.y
+                tracker.armed = false
+                tracker.liftObserved = false
             }
         }
         return out
+    }
+
+    private fun handednessCompatible(tracked: String, current: String): Boolean =
+        tracked == UNKNOWN_HANDEDNESS || current == UNKNOWN_HANDEDNESS || tracked == current
+
+    private companion object {
+        const val DEFAULT_REARM_MS = 60L
+        const val REARM_LIFT_DISTANCE = 0.018f
+        const val UNKNOWN_HANDEDNESS = "Unknown"
     }
 }
