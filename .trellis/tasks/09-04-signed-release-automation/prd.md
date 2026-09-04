@@ -37,7 +37,7 @@
 - [x] 使用已备份的正式专用 keystore 可在本地生成 `app-release.apk`，`apksigner` 验证成功且证书指纹匹配任务记录。
 - [x] 首套正式专用 keystore 已生成、权限受限并完成离线备份。
 - [x] CI 的四项签名 Secret 均只在 Release 作业使用，日志与构件中无密钥或密码。
-- [ ] 标签与版本不一致时 CI 阻止发布；`v0.1.0-m8` 可生成签名 APK、SHA-256 与构建信息。
+- [x] 标签与版本不一致时发布校验阻止发布；`v0.1.0-m8` 可生成签名 APK、SHA-256 与构建信息。
 - [ ] 标签流程全自动创建普通公开 GitHub Release 并上传完整产物，不标记 Pre-release/Draft；手动流程只上传 Actions 构件。
 - [x] 内测标签不因三档设备数据未齐而失败；发布说明明确标注当前为内测里程碑，不伪称稳定版。
 - [ ] 签名 APK 在 PJZ110 安装、启动、四色快速切换演奏和后台恢复正常。
@@ -79,3 +79,6 @@
 - 缺少本地签名配置时 `preReleaseBuild` 明确失败；通用 `assemble` 依赖图包含同一门禁，不能绕过。
 - Gradle 配置缓存可复用，并能在 `keystore.properties` 新增/移除时正确失效。
 - GitHub 仓库已配置四项 Actions Secrets；CLI 只验证名称与更新时间，未读取或输出远程值。
+- GitHub `workflow_dispatch` 运行 `33847138811` 全部通过；Debug 门禁与签名 Release 作业分别通过，手动流程按设计跳过公开 Release。
+- 远程构件 `void-music-release-8` 已独立下载复核：ZIP 完整、APK SHA-256 为 `18c6d33fcb3a74659483ea3b93f2414b1e575884a4aa82ddfef04ac8643255f8` 且 `SHA256SUMS` 校验通过；`BUILD-INFO.txt` 指向提交 `86bf15a196e900f587182086ddf996bb250a90e6`，APK 为 `versionName=0.1.0-m8`、`versionCode=3`。
+- 远程 APK 经本地 `apksigner` 二次验证：v2 签名有效、仅 1 个 signer、RSA 4096，证书 SHA-256 与 Signing Identity 一致。

@@ -34,6 +34,8 @@ GitHub Secrets
   → 仅 tag 事件创建普通公开 GitHub Release 并上传产物
 ```
 
+Actions Artifact 名称使用纯数字 `github.run_number`，避免带 `/` 的功能分支名触发 GitHub 文件系统兼容性限制；归档内 APK 文件名仍使用 `versionName`，保持发布物可读且可追溯。
+
 Secrets 使用以下名称：
 
 - `ANDROID_RELEASE_KEYSTORE_BASE64`
