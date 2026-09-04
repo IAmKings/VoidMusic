@@ -8,6 +8,62 @@ plugins {
     id("kotlin-kapt")
 }
 
+val releaseSigningPropertiesFile = rootProject.file("keystore.properties")
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningValue(propertyName: String, environmentName: String): String? =
+    releaseSigningProperties.getProperty(propertyName)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: providers.environmentVariable(environmentName).orNull
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+fun releaseSigningSecret(
+    propertyName: String,
+    propertyFileName: String,
+    environmentName: String
+): String? {
+    releaseSigningValue(propertyName, environmentName)?.let { return it }
+    val secretFilePath = releaseSigningProperties.getProperty(propertyFileName)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: return null
+    return rootProject.file(secretFilePath)
+        .takeIf { it.isFile }
+        ?.readText()
+        ?.trimEnd('\r', '\n')
+        ?.takeIf { it.isNotEmpty() }
+}
+
+val releaseStoreFilePath = releaseSigningValue("storeFile", "VOID_MUSIC_STORE_FILE")
+val releaseStorePassword = releaseSigningSecret(
+    "storePassword",
+    "storePasswordFile",
+    "VOID_MUSIC_STORE_PASSWORD"
+)
+val releaseKeyAlias = releaseSigningValue("keyAlias", "VOID_MUSIC_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningSecret(
+    "keyPassword",
+    "keyPasswordFile",
+    "VOID_MUSIC_KEY_PASSWORD"
+)
+val releaseSigningFields = linkedMapOf(
+    "storeFile" to releaseStoreFilePath,
+    "storePassword/storePasswordFile" to releaseStorePassword,
+    "keyAlias" to releaseKeyAlias,
+    "keyPassword/keyPasswordFile" to releaseKeyPassword
+)
+val missingReleaseSigningFields = releaseSigningFields
+    .filterValues { it == null }
+    .keys
+val releaseStoreFile = releaseStoreFilePath?.let(rootProject::file)
+val releaseSigningReady = missingReleaseSigningFields.isEmpty() && releaseStoreFile?.isFile == true
+
 android {
     namespace = "com.electrodig.voidmusic"
     compileSdk = 35
@@ -16,11 +72,23 @@ android {
         applicationId = "com.electrodig.voidmusic"
         minSdk = 26          // PRD: Android 8.0 (API 26)+
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.0-m7"
+        versionCode = 3
+        versionName = "0.1.0-m8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                storeType = "PKCS12"
+            }
+        }
     }
 
     buildTypes {
@@ -32,6 +100,7 @@ android {
             }
         }
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             // Release: arm64-v8a only to keep APK under 80 MB (PRD §6.2.3 / M6 R6.4).
@@ -97,6 +166,29 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+val validateReleaseSigningInputs by tasks.registering {
+    group = "verification"
+    description = "Fails before any Release build when the dedicated signing identity is unavailable."
+    inputs.property("missingFields", missingReleaseSigningFields.joinToString())
+    inputs.property("keystoreExists", releaseStoreFile?.isFile == true)
+    doLast {
+        val missingFields = inputs.properties.getValue("missingFields") as String
+        val keystoreExists = inputs.properties.getValue("keystoreExists") as Boolean
+        if (missingFields.isNotEmpty()) {
+            throw GradleException(
+                "Release signing configuration is incomplete. Missing: $missingFields"
+            )
+        }
+        if (!keystoreExists) {
+            throw GradleException("Release signing keystore file does not exist.")
+        }
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(validateReleaseSigningInputs)
 }
 
 dependencies {
