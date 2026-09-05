@@ -52,32 +52,33 @@
 
 ### 2.1 抽取 LivePerformancePipeline
 
-- [ ] 先建立现有 MainScreen 输入输出契约和集成测试夹具。
-- [ ] 迁移相机、识别、击打和指标编排，不改变算法参数。
-- [ ] MainScreen 仅保留权限、事件转发和渲染。
-- [ ] 合并重复的 AtomicReference/Flow 桥接，保留必要的不可变快照。
+- [x] 建立 `LivePerformanceInputs` / `LivePerformanceEvent` 输入输出契约。
+- [x] 迁移相机、识别、击打和指标编排，不改变算法参数。
+- [ ] MainScreen 进一步收敛到权限、事件转发、音频/Transport 会话协调和渲染。
+- [x] 合并重复的 AtomicReference/Flow 桥接，保留必要的不可变快照。
+- [ ] 为深层 Pipeline 补充可替换帧源的集成测试夹具。
 
 ### 2.2 Transport 与序列状态
 
-- [ ] SequenceState 改为不可变内部表示并保持磁盘兼容。
-- [ ] 注入 MonotonicClock 和 AudioTrigger。
-- [ ] 改为绝对截止时间调度并定义过期拍处理策略。
-- [ ] 增加 BPM 改变、播放/停止、清空、快照隔离和长期无累计漂移测试。
+- [x] SequenceState 改为不可变内部表示并保持磁盘兼容。
+- [x] 注入 MonotonicClock 和 AudioTrigger。
+- [x] 改为绝对截止时间调度；过期拍直接跳过，禁止突发补打。
+- [x] 增加 BPM 边界、播放/停止、清空、快照隔离、过期拍和长期无累计漂移测试。
 
 ### 2.3 运行时性能策略
 
-- [ ] 分离 preferredLevel 与 runtime constraints。
-- [ ] 使用 PowerManager thermal listener 并对称注销。
-- [ ] 验证省电/温控解除后恢复用户首选档位。
+- [x] 分离 preferredLevel 与 runtime constraints。
+- [x] 使用 PowerManager thermal listener 并对称注销。
+- [x] 用策略测试验证省电/温控解除后恢复用户首选档位。
 
 ### 2.4 持久化瘦身
 
-- [ ] 设置滑块使用本地预览并在结束或 debounce 后落盘。
-- [ ] 合并重复 settings 收集为 Loading/Ready/Error 状态。
-- [ ] 从 SessionViewModel 移除 KitRepository 和启动时 `seedBuiltIns()`，避免每次启动写入静态内置数据。
-- [ ] 保留 Room 依赖和数据库能力，不在当前任务内扩展音频导入 Schema。
-- [ ] 确认 BuiltInKits 仍是当前内置音色的唯一运行时来源。
-- [ ] 当前任务归档后，依据 `research/audio-import-storage-and-migration.md` 创建独立音频导入任务。
+- [x] 设置与 HSV 滑块使用本地预览并在拖动结束后落盘。
+- [x] 合并重复 settings 数据源收集为 Loading/Ready/Error 状态。
+- [x] 从 SessionViewModel 移除 KitRepository 和启动时 `seedBuiltIns()`，避免每次启动写入静态内置数据。
+- [x] 保留 Room 依赖和数据库能力，不在当前任务内扩展音频导入 Schema。
+- [x] 确认 BuiltInKits 仍是当前内置音色的唯一运行时来源。
+- [x] 当前任务归档后，依据 `research/audio-import-storage-and-migration.md` 创建独立音频导入任务。
 
 阶段质量门：MainScreen 职责收敛、Transport 测试通过、设置兼容、现有演奏回归无变化。
 

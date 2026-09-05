@@ -16,7 +16,7 @@ import com.electrodig.voidmusic.detection.color.DrumPad
 data class SequenceState(
     val rows: Int = DEFAULT_ROWS,
     val steps: Int = DEFAULT_STEPS,
-    val grid: List<MutableList<Boolean>> = List(rows) { MutableList(steps) { false } },
+    val grid: List<List<Boolean>> = List(rows) { List(steps) { false } },
     val bpm: Int = DEFAULT_BPM,
     val currentStep: Int = 0,
     val isPlaying: Boolean = false
@@ -26,7 +26,25 @@ data class SequenceState(
         row in 0 until rows && step in 0 until steps && grid[row][step]
 
     fun copyWithGrid(newGrid: List<List<Boolean>>): SequenceState =
-        copy(grid = newGrid.map { it.toMutableList() })
+        copy(grid = newGrid.map { it.toList() })
+
+    /** Returns a new state with one cell changed; existing snapshots stay untouched. */
+    fun withCellToggled(row: Int, step: Int): SequenceState {
+        if (row !in 0 until rows || step !in 0 until steps) return this
+        return copy(
+            grid = grid.mapIndexed { rowIndex, cells ->
+                if (rowIndex != row) cells else cells.mapIndexed { stepIndex, enabled ->
+                    if (stepIndex == step) !enabled else enabled
+                }
+            }
+        )
+    }
+
+    /** Returns a fresh all-off grid while preserving BPM and playback flags. */
+    fun cleared(): SequenceState = copy(
+        grid = List(rows) { List(steps) { false } },
+        currentStep = 0
+    )
 
     companion object {
         const val DEFAULT_ROWS = 4

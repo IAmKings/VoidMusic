@@ -27,6 +27,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -54,6 +55,21 @@ fun SettingsScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     var resetConfirmationVisible by remember { mutableStateOf(false) }
+    var previewVolume by remember(settings.masterVolume) {
+        mutableFloatStateOf(settings.masterVolume)
+    }
+    var previewVelocity by remember(settings.hitVelocityThreshold) {
+        mutableFloatStateOf(settings.hitVelocityThreshold)
+    }
+    var previewCooldown by remember(settings.hitCooldownMs) {
+        mutableFloatStateOf(settings.hitCooldownMs.toFloat())
+    }
+    var previewMinCutoff by remember(settings.smoothingMinCutoff) {
+        mutableFloatStateOf(settings.smoothingMinCutoff)
+    }
+    var previewBeta by remember(settings.smoothingBeta) {
+        mutableFloatStateOf(settings.smoothingBeta)
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -107,8 +123,9 @@ fun SettingsScreen(
             // ---- Master volume (PRD F6.5) ----
             Section("主音量") {
                 Slider(
-                    value = settings.masterVolume,
-                    onValueChange = viewModel::setMasterVolume,
+                    value = previewVolume,
+                    onValueChange = { previewVolume = it },
+                    onValueChangeFinished = { viewModel.setMasterVolume(previewVolume) },
                     valueRange = 0f..1f
                 )
             }
@@ -132,27 +149,39 @@ fun SettingsScreen(
 
             // ---- Hit response (PRD F8.3) ----
             Section("击打识别") {
-                Text("击打灵敏度 ${"%.2f".format(settings.hitVelocityThreshold)}")
+                Text("击打灵敏度 ${"%.2f".format(previewVelocity)}")
                 Slider(
-                    value = settings.hitVelocityThreshold,
-                    onValueChange = viewModel::setHitVelocityThreshold,
+                    value = previewVelocity,
+                    onValueChange = { previewVelocity = it },
+                    onValueChangeFinished = {
+                        viewModel.setHitVelocityThreshold(previewVelocity)
+                    },
                     valueRange = 0.2f..2.0f
                 )
-                Text("击打复位 ${settings.hitCooldownMs} ms")
+                Text("击打复位 ${previewCooldown.toLong()} ms")
                 Slider(
-                    value = settings.hitCooldownMs.toFloat(),
-                    onValueChange = { viewModel.setHitCooldownMs(it.toLong()) },
+                    value = previewCooldown,
+                    onValueChange = { previewCooldown = it },
+                    onValueChangeFinished = {
+                        viewModel.setHitCooldownMs(previewCooldown.toLong())
+                    },
                     valueRange = 50f..500f
                 )
-                Text("手部平滑 ${"%.1f".format(settings.smoothingMinCutoff)} / ${"%.2f".format(settings.smoothingBeta)}")
+                Text("手部平滑 ${"%.1f".format(previewMinCutoff)} / ${"%.2f".format(previewBeta)}")
                 Slider(
-                    value = settings.smoothingMinCutoff,
-                    onValueChange = { viewModel.setSmoothing(it, settings.smoothingBeta) },
+                    value = previewMinCutoff,
+                    onValueChange = { previewMinCutoff = it },
+                    onValueChangeFinished = {
+                        viewModel.setSmoothing(previewMinCutoff, previewBeta)
+                    },
                     valueRange = 1.5f..4.0f
                 )
                 Slider(
-                    value = settings.smoothingBeta,
-                    onValueChange = { viewModel.setSmoothing(settings.smoothingMinCutoff, it) },
+                    value = previewBeta,
+                    onValueChange = { previewBeta = it },
+                    onValueChangeFinished = {
+                        viewModel.setSmoothing(previewMinCutoff, previewBeta)
+                    },
                     valueRange = 0.02f..0.1f
                 )
             }

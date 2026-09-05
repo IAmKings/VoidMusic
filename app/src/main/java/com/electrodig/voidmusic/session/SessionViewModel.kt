@@ -1,10 +1,6 @@
 package com.electrodig.voidmusic.session
 
 import android.app.Application
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.PowerManager
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.electrodig.voidmusic.detection.color.DetectionConfig
@@ -14,7 +10,9 @@ import com.electrodig.voidmusic.persistence.PerformanceLevel
 import com.electrodig.voidmusic.persistence.CalibrationPoint
 import com.electrodig.voidmusic.persistence.Settings
 import com.electrodig.voidmusic.persistence.SettingsRepository
-import com.electrodig.voidmusic.persistence.KitRepository
+import com.electrodig.voidmusic.performance.RuntimePerformancePolicy
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,63 +30,54 @@ import kotlinx.coroutines.launch
 class SessionViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
-    private val kitRepository = KitRepository(app)
-    private val powerManager = app.getSystemService(PowerManager::class.java)
+    private val performancePolicy = RuntimePerformancePolicy(app)
 
     private val _uiState = MutableStateFlow(SessionUiState())
     val uiState: StateFlow<SessionUiState> = _uiState.asStateFlow()
 
-    /** Persisted settings (loaded from DataStore, kept in sync on change). */
-    val settings: StateFlow<Settings> = repo.settings.stateIn(
-        viewModelScope, SharingStarted.Eagerly, Settings.DEFAULT
-    )
-    /** Becomes true after DataStore has emitted a real snapshot, not stateIn's default. */
-    val settingsLoaded: StateFlow<Boolean> = repo.settings
-        .map { true }
+    /** The only subscription to DataStore settings, including loading/error state. */
+    val settingsState: StateFlow<SettingsLoadState> = repo.settings
+        .map<Settings, SettingsLoadState>(SettingsLoadState::Ready)
+        .catch { error -> emit(SettingsLoadState.Error(Settings.DEFAULT, error)) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsLoadState.Loading)
+
+    /** Persisted settings exposed for existing UI callers. */
+    val settings: StateFlow<Settings> = settingsState
+        .map(SettingsLoadState::settingsOrDefault)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, Settings.DEFAULT)
+
+    /** Becomes true after DataStore has produced either a snapshot or an error. */
+    val settingsLoaded: StateFlow<Boolean> = settingsState
+        .map { it !is SettingsLoadState.Loading }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Effective tier after temporary power/thermal constraints; never persisted. */
+    val runtimePerformanceLevel: StateFlow<PerformanceLevel> = combine(
+        settings,
+        performancePolicy.constraints
+    ) { saved, constraints -> constraints.effectiveLevel(saved.performanceLevel) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            performancePolicy.constraints.value.effectiveLevel(Settings.DEFAULT.performanceLevel)
+        )
     /** One atomic state prevents choosing a route from StateFlow's temporary default. */
     val onboardingState: StateFlow<OnboardingState> = repo.onboardingCompleted
         .map { completed -> OnboardingState(isLoaded = true, completed = completed) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, OnboardingState())
 
-    // Auto-switch to LOW tier when battery saver is active (PRD R6.2).
     init {
         viewModelScope.launch {
-            runCatching { kitRepository.seedBuiltIns() }
-                .onFailure { Log.e("SessionVM", "Failed to seed built-in kit metadata", it) }
-        }
-        viewModelScope.launch {
-            repo.settings.collect { saved ->
+            settings.collect { saved ->
                 val mode = StudioMode.entries.firstOrNull { it.name == saved.lastMode } ?: StudioMode.TAP
                 _uiState.update { it.copy(mode = mode) }
             }
         }
-        val receiver = object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: android.content.Context?, intent: Intent?) {
-                if (intent == null) return
-                val isPowerSave = powerManager?.isPowerSaveMode == true
-                if (isPowerSave && settings.value.performanceLevel != PerformanceLevel.LOW) {
-                    Log.i("SessionVM", "Power save mode active — switching to LOW performance tier")
-                    setPerformanceLevel(PerformanceLevel.LOW)
-                }
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    // BatteryManager.EXTRA_THERMAL_STATUS added in API 29.
-                    val thermalStatus = intent.getIntExtra(
-                        "android.os.extra.THERMAL_STATUS",
-                        0 // THERMAL_STATUS_NONE
-                    )
-                    if (thermalStatus >= 1 /* THERMAL_STATUS_MODERATE */
-                        && settings.value.performanceLevel != PerformanceLevel.LOW) {
-                        Log.w("SessionVM", "Thermal throttling (status=$thermalStatus) — switching to LOW tier")
-                        setPerformanceLevel(PerformanceLevel.LOW)
-                    }
-                }
-            }
-        }
-        val filter = IntentFilter().apply {
-            addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
-        }
-        app.registerReceiver(receiver, filter)
+    }
+
+    override fun onCleared() {
+        performancePolicy.close()
+        super.onCleared()
     }
 
     /** Latest drum zones detected by the segmentation pipeline (PRD F4.5). */
@@ -211,3 +200,15 @@ data class OnboardingState(
     val isLoaded: Boolean = false,
     val completed: Boolean = false
 )
+
+sealed interface SettingsLoadState {
+    data object Loading : SettingsLoadState
+    data class Ready(val settings: Settings) : SettingsLoadState
+    data class Error(val fallback: Settings, val cause: Throwable) : SettingsLoadState
+
+    fun settingsOrDefault(): Settings = when (this) {
+        Loading -> Settings.DEFAULT
+        is Ready -> settings
+        is Error -> fallback
+    }
+}

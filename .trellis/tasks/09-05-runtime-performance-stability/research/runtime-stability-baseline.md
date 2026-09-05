@@ -62,3 +62,10 @@
 - 8 个 `VM-Cam-1-1` 名称来自同一 CameraModule/Executor 创建的 MediaPipe 原生线程；20 次循环前后数量未增长。
 
 仍需人工完成：实际连续演奏听感，以及扬声器、耳机/蓝牙、再返回扬声器的路由切换验证。
+
+## 阶段 2 真机回归记录
+
+- 深层 Pipeline、绝对截止时间 Transport 和 runtime constraints 合入签名 Release 后，冷启动 TotalTime 107 ms。
+- 前台恢复后分析 FPS 为 15，音频保持 Oboe，`droppedTriggers=0`、`xRun=0`。
+- 完成 5 次前台/后台循环，PID 保持 26288，Crash buffer 为空；恢复后 FPS 回到 15。
+- ColorSegmenter 改为每次 Pipeline start 新建、stop 释放，消除了关闭后复用已释放 OpenCV Mat 的隐患。

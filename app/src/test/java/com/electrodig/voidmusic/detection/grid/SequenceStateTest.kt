@@ -27,8 +27,8 @@ class SequenceStateTest {
     @Test
     fun `toggling grid reflects in isOn`() {
         val s = SequenceState()
-        s.grid[0][0] = true
-        s.grid[3][15] = true
+            .withCellToggled(0, 0)
+            .withCellToggled(3, 15)
         assertTrue(s.isOn(0, 0))
         assertTrue(s.isOn(3, 15))
         assertFalse(s.isOn(0, 1))
@@ -50,6 +50,17 @@ class SequenceStateTest {
         val s2 = s.copyWithGrid(newGrid)
         assertTrue(s2.isOn(1, 2))
         assertFalse("original untouched", s.isOn(1, 2))
+        newGrid[1][2] = false
+        assertTrue("copied snapshot is isolated from caller mutation", s2.isOn(1, 2))
+    }
+
+    @Test
+    fun `cell toggle preserves prior snapshot`() {
+        val before = SequenceState()
+        val after = before.withCellToggled(2, 7)
+
+        assertFalse(before.isOn(2, 7))
+        assertTrue(after.isOn(2, 7))
     }
 
     @Test

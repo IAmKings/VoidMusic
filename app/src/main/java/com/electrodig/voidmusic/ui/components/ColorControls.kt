@@ -21,6 +21,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -101,24 +105,37 @@ private fun HsvSliderRow(
     range: ClosedFloatingPointRange<Float>,
     onChange: (Int, Int) -> Unit
 ) {
+    var previewMin by remember(min, max) { mutableIntStateOf(min) }
+    var previewMax by remember(min, max) { mutableIntStateOf(max) }
+
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-            Text("$min – $max", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "$previewMin – $previewMax",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Lower bound
             Slider(
-                value = min.toFloat(),
-                onValueChange = { onChange(it.toInt().coerceIn(range.start.toInt(), max), max) },
+                value = previewMin.toFloat(),
+                onValueChange = {
+                    previewMin = it.toInt().coerceIn(range.start.toInt(), previewMax)
+                },
+                onValueChangeFinished = { onChange(previewMin, previewMax) },
                 valueRange = range,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.size(8.dp))
             // Upper bound
             Slider(
-                value = max.toFloat(),
-                onValueChange = { onChange(min, it.toInt().coerceIn(min, range.endInclusive.toInt())) },
+                value = previewMax.toFloat(),
+                onValueChange = {
+                    previewMax = it.toInt().coerceIn(previewMin, range.endInclusive.toInt())
+                },
+                onValueChangeFinished = { onChange(previewMin, previewMax) },
                 valueRange = range,
                 modifier = Modifier.weight(1f)
             )

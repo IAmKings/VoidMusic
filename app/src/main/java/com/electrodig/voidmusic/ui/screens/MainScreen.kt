@@ -4,12 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Build
-import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -39,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,25 +54,14 @@ import com.electrodig.voidmusic.audio.AudioBackend
 import com.electrodig.voidmusic.audio.AudioRuntimePhase
 import com.electrodig.voidmusic.audio.BuiltInKits
 import com.electrodig.voidmusic.audio.Transport
-import com.electrodig.voidmusic.camera.CameraModule
 import com.electrodig.voidmusic.camera.CameraPreview
-import com.electrodig.voidmusic.camera.FrameRouter
 import com.electrodig.voidmusic.camera.PreviewCoordinateMapper
 import com.electrodig.voidmusic.camera.VisionMetrics
-import com.electrodig.voidmusic.camera.VisionMetricsRecorder
-import com.electrodig.voidmusic.detection.color.ColorSegmenter
-import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.color.HsvRange
-import com.electrodig.voidmusic.detection.color.HsvColorPicker
-import com.electrodig.voidmusic.detection.color.OpenCvLoader
-import com.electrodig.voidmusic.detection.color.ZoneTracker
 import com.electrodig.voidmusic.detection.grid.GridScanner
-import com.electrodig.voidmusic.detection.hand.HandTracker
-import com.electrodig.voidmusic.detection.hand.OneEuroHandStabilizer
-import com.electrodig.voidmusic.detection.hit.HitArbiter
-import com.electrodig.voidmusic.detection.hit.HitDetector
-import com.electrodig.voidmusic.detection.hit.HitSnapshot
-import com.electrodig.voidmusic.detection.hit.TapHitProcessor
+import com.electrodig.voidmusic.performance.LivePerformanceEvent
+import com.electrodig.voidmusic.performance.LivePerformanceInputs
+import com.electrodig.voidmusic.performance.LivePerformancePipeline
 import com.electrodig.voidmusic.persistence.PerformanceConfig
 import com.electrodig.voidmusic.session.SessionViewModel
 import com.electrodig.voidmusic.session.StudioMode
@@ -90,10 +77,6 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.atomic.AtomicLong
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.collect
 
 /**
@@ -120,126 +103,66 @@ fun MainScreen(
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
-    val perfConfig = PerformanceConfig.forLevel(settings.performanceLevel)
-    val analysisEvents = remember {
-        MutableSharedFlow<AnalysisEvent>(
-            extraBufferCapacity = 32,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST
-        )
-    }
-    val visionMetricsRecorder = remember(settings.performanceLevel) { VisionMetricsRecorder() }
-    val modeHolder = remember { AtomicReference(StudioMode.TAP) }
-    val hapticHolder = remember { AtomicReference(true) }
-    val tapSnapshotRef = remember { AtomicReference(HitSnapshot()) }
-    val tapHitProcessorRef = remember { AtomicReference<TapHitProcessor?>(null) }
-    val drumEngineRef = remember { AtomicReference<DrumEngine?>(null) }
-
-    // HandTracker and segmenter are keyed by performance level so tier changes
-    // take effect (recreates with new resolution / delegate / maxHands / downsample).
-    val handTracker = remember(
-        settings.performanceLevel,
-        settings.smoothingMinCutoff,
-        settings.smoothingBeta
-    ) {
-        HandTracker(
-            context,
-            maxHands = perfConfig.maxHands,
-            delegate = perfConfig.mediaPipeDelegate,
-            stabilizer = OneEuroHandStabilizer(
-                minCutoff = settings.smoothingMinCutoff,
-                beta = settings.smoothingBeta
-            ),
-            resultHandler = { frame ->
-                visionMetricsRecorder.recordHandResult(
-                    frame.callbackCompletedAtMs - frame.timestampMs
-                )?.let { metrics ->
-                    analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
-                }
-                val consumedAtMs = SystemClock.elapsedRealtime()
-                visionMetricsRecorder.recordHandCallbackToConsume(
-                    consumedAtMs - frame.callbackCompletedAtMs
-                )?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
-                if (modeHolder.get() == StudioMode.TAP) {
-                    val triggers = tapHitProcessorRef.get()
-                        ?.process(frame, consumedAtMs, tapSnapshotRef.get())
-                        .orEmpty()
-                    if (triggers.isNotEmpty()) {
-                        val candidateResolvedAtMs = SystemClock.elapsedRealtime()
-                        val engine = drumEngineRef.get()
-                        for (trigger in triggers) engine?.trigger(trigger.pad, trigger.velocity)
-                        visionMetricsRecorder.recordHitToAudioSubmit(
-                            SystemClock.elapsedRealtime() - candidateResolvedAtMs
-                        )?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
-                        analysisEvents.tryEmit(
-                            AnalysisEvent.Hit(triggers.map { it.zoneId }, hapticHolder.get())
-                        )
-                    }
-                }
-            }
-        )
-    }
-    val segmenter = remember(settings.performanceLevel) {
-        ColorSegmenter(downsample = perfConfig.colorDownsample)
-    }
+    val runtimePerformanceLevel by viewModel.runtimePerformanceLevel.collectAsStateWithLifecycle()
+    val perfConfig = PerformanceConfig.forLevel(runtimePerformanceLevel)
     val gridScanner = remember { GridScanner() }
     val drumEngine = remember { DrumEngine(context) }
     val transport = remember { Transport(drumEngine) }
-    val tapHitProcessor = remember(settings.hitVelocityThreshold, settings.hitCooldownMs) {
-        TapHitProcessor(
-            detector = HitDetector(settings.hitVelocityThreshold, settings.hitCooldownMs),
-            arbiter = HitArbiter()
-        )
-    }
-    val hitDetector = remember(settings.hitVelocityThreshold, settings.hitCooldownMs) {
-        HitDetector(
-            velocityThreshold = settings.hitVelocityThreshold,
-            cooldownMs = settings.hitCooldownMs
-        )
-    }
     val view = LocalView.current
 
-    val hands by handTracker.hands.collectAsStateWithLifecycle()
     val session by viewModel.uiState.collectAsStateWithLifecycle()
     val zones by viewModel.zones.collectAsStateWithLifecycle()
     val flashedZoneIds by viewModel.flashedZoneIds.collectAsStateWithLifecycle()
     val detectionConfig = settings.detectionConfig
     val sequence by transport.state.collectAsStateWithLifecycle()
     val audioStatus by drumEngine.status.collectAsStateWithLifecycle()
+    val pipeline = remember(
+        runtimePerformanceLevel,
+        settings.smoothingMinCutoff,
+        settings.smoothingBeta,
+        settings.hitVelocityThreshold,
+        settings.hitCooldownMs
+    ) {
+        LivePerformancePipeline(
+            context = context,
+            performanceConfig = perfConfig,
+            smoothingMinCutoff = settings.smoothingMinCutoff,
+            smoothingBeta = settings.smoothingBeta,
+            hitVelocityThreshold = settings.hitVelocityThreshold,
+            hitCooldownMs = settings.hitCooldownMs,
+            initialInputs = LivePerformanceInputs(session.mode, detectionConfig),
+            projectionProvider = gridScanner::projection,
+            audioTrigger = drumEngine::trigger,
+            stepToggle = transport::toggleStep
+        )
+    }
+    val hands by pipeline.hands.collectAsStateWithLifecycle()
 
     var activePresetIndex by remember { mutableIntStateOf(0) }
     var calibrating by remember { mutableStateOf(false) }
     var showColorControls by remember { mutableStateOf(false) }
     var pickingColor by remember { mutableStateOf(false) }
     var sessionRestored by remember { mutableStateOf(false) }
-    var visionMetrics by remember(settings.performanceLevel) { mutableStateOf(VisionMetrics()) }
-    LaunchedEffect(session.mode) { modeHolder.set(session.mode) }
-    LaunchedEffect(settings.hapticEnabled) { hapticHolder.set(settings.hapticEnabled) }
-    LaunchedEffect(drumEngine) { drumEngineRef.set(drumEngine) }
-    LaunchedEffect(tapHitProcessor) { tapHitProcessorRef.set(tapHitProcessor) }
-    val lastCellToggleMs = remember { HashMap<Long, Long>() }
-    // Color segmentation runs every Nth frame (zones are spatially slow-moving;
-    // running it every frame starves the hand path on low-FPS devices). Hit
-    // detection runs every frame using the most recent cached zones.
-    val zoneFrameCounter = remember { intArrayOf(0) }
-    val cachedZones = remember { AtomicReference<List<DrumZone>>(emptyList()) }
-    val cachedZonesTimestampMs = remember { AtomicLong(Long.MIN_VALUE) }
-    val zoneTracker = remember(settings.performanceLevel) { ZoneTracker() }
-    val viewportRef = remember { AtomicReference<PreviewViewport?>(null) }
-    val pickerRequestRef = remember { AtomicReference<PickerRequest?>(null) }
-    // The camera executor only emits immutable events. Compose/Android View work
-    // is deliberately consumed here on the main dispatcher.
-    LaunchedEffect(analysisEvents) {
-        analysisEvents.collect { event ->
+    var visionMetrics by remember(pipeline) { mutableStateOf(VisionMetrics()) }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var previewViewport by remember { mutableStateOf<PreviewViewport?>(null) }
+    val hapticEnabled by rememberUpdatedState(settings.hapticEnabled)
+
+    LaunchedEffect(pipeline, session.mode, detectionConfig) {
+        pipeline.updateInputs(LivePerformanceInputs(session.mode, detectionConfig))
+    }
+    LaunchedEffect(pipeline) {
+        pipeline.events.collect { event ->
             when (event) {
-                is AnalysisEvent.Zones -> viewModel.setZones(event.zones)
-                is AnalysisEvent.Fps -> viewModel.setAnalysisFps(event.value)
-                is AnalysisEvent.Metrics -> visionMetrics = event.value
-                is AnalysisEvent.Hit -> {
+                is LivePerformanceEvent.Zones -> viewModel.setZones(event.zones)
+                is LivePerformanceEvent.Fps -> viewModel.setAnalysisFps(event.value)
+                is LivePerformanceEvent.Metrics -> visionMetrics = event.value
+                is LivePerformanceEvent.Hit -> {
                     viewModel.flashZones(event.zoneIds)
-                    if (event.haptic) performTapHaptic(view)
+                    if (hapticEnabled) performTapHaptic(view)
                 }
-                is AnalysisEvent.StepToggle -> if (event.haptic) performTapHaptic(view)
-                is AnalysisEvent.ColorPicked -> {
+                LivePerformanceEvent.StepToggle -> if (hapticEnabled) performTapHaptic(view)
+                is LivePerformanceEvent.ColorPicked -> {
                     viewModel.updateDetectionConfig { config ->
                         val presets = config.presets.toMutableList()
                         if (event.presetIndex in presets.indices) {
@@ -252,12 +175,9 @@ fun MainScreen(
         }
     }
 
-    // Heavy realtime resources follow permission + foreground state. The same
-    // instances can be resumed, while final disposal remains handled below.
-    DisposableEffect(performanceActive, handTracker, segmenter, drumEngine) {
+    // Audio follows foreground state independently from the camera surface.
+    DisposableEffect(performanceActive, drumEngine) {
         if (performanceActive) {
-            OpenCvLoader.ensureInitialised(context)
-            handTracker.setup()
             drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
             drumEngine.start()
             drumEngine.setMasterVolume(settings.masterVolume)
@@ -265,8 +185,6 @@ fun MainScreen(
         onDispose {
             if (performanceActive) {
                 transport.stop()
-                handTracker.close()
-                segmenter.close()
                 drumEngine.stop()
             }
         }
@@ -298,120 +216,16 @@ fun MainScreen(
             transport.release()
         }
     }
-    DisposableEffect(handTracker) {
-        onDispose { handTracker.close() }
-    }
-    DisposableEffect(segmenter) {
-        onDispose { segmenter.close() }
+    DisposableEffect(pipeline) {
+        onDispose { pipeline.close() }
     }
 
     // Bridge hand count into HUD state.
-    LaunchedEffect(hands.size) {
+    LaunchedEffect(hands.size, zones.size) {
         viewModel.updateDetection(
             objectCount = zones.size,
             handCount = hands.size,
             signal = if (hands.isEmpty() && zones.isEmpty()) 0f else 0.65f
-        )
-    }
-
-    // Atomic references prevent the camera executor from reading Compose
-    // snapshots while still giving it the current configuration.
-    val configHolder = remember { AtomicReference(detectionConfig) }
-    LaunchedEffect(detectionConfig) { configHolder.set(detectionConfig) }
-
-    val camera = remember(
-        settings.performanceLevel,
-        settings.smoothingMinCutoff,
-        settings.smoothingBeta,
-        settings.hitVelocityThreshold,
-        settings.hitCooldownMs
-    ) {
-        CameraModule(
-            context = context,
-            targetResolution = perfConfig.cameraResolution,
-            analyzer = FrameRouter(
-                bitmapConsumers = listOf(
-                    // Hand tracking (FrameRouter closes the proxy).
-                    { bitmap, proxy ->
-                        handTracker.detect(bitmap, handTracker.timestampMs(proxy.imageInfo.timestamp))
-                    },
-                    // Colour segmentation → zones, then hit detection → triggers.
-                    segmentation@ { bitmap, proxy ->
-                        val ts = handTracker.timestampMs(proxy.imageInfo.timestamp)
-                        // Segmentation is expensive OpenCV work; run it every 3rd
-                        // frame so it doesn't starve the hand path on low-FPS
-                        // devices. Zones move slowly so a stale cache is fine.
-                        zoneFrameCounter[0]++
-                        val viewport = viewportRef.get()
-                        val mapper = viewport?.let {
-                            PreviewCoordinateMapper.forFillCenter(
-                                bitmap.width, bitmap.height, it.width, it.height
-                            )
-                        } ?: return@segmentation
-                        pickerRequestRef.getAndSet(null)?.let { request ->
-                            val sourcePoint = mapper.unmap(request.x, request.y)
-                            HsvColorPicker.sample(bitmap, sourcePoint.x, sourcePoint.y)?.let { range ->
-                                analysisEvents.tryEmit(AnalysisEvent.ColorPicked(request.presetIndex, range))
-                            }
-                        }
-                        if (zoneFrameCounter[0] % 3 == 0) {
-                            val segmentStartMs = SystemClock.elapsedRealtime()
-                            val trackedZones = zoneTracker.update(
-                                segmenter.segment(bitmap, configHolder.get()),
-                                ts
-                            )
-                            visionMetricsRecorder.recordSegmentation(
-                                SystemClock.elapsedRealtime() - segmentStartMs
-                            )?.let { metrics ->
-                                analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
-                            }
-                            cachedZones.set(trackedZones)
-                            cachedZonesTimestampMs.set(ts)
-                            tapSnapshotRef.set(HitSnapshot(trackedZones, ts))
-                            analysisEvents.tryEmit(AnalysisEvent.Zones(trackedZones.map(mapper::map)))
-                        }
-                        val cacheTimestampMs = cachedZonesTimestampMs.get()
-                        if (cachedZones.get().isNotEmpty() && cacheTimestampMs != Long.MIN_VALUE) {
-                            visionMetricsRecorder.recordZoneCacheAge(ts - cacheTimestampMs)
-                                ?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
-                        }
-                        // MediaPipe returns hands asynchronously and may drop input frames.
-                        // Consume each queued result with its own source timestamp; never
-                        // pair landmarks from an older inference with this camera frame's ts.
-                        for (rawFrame in handTracker.drainRawHandFrames()) {
-                            if (modeHolder.get() != StudioMode.STEP) continue
-                            val latestHands = rawFrame.hands.map { hand ->
-                                PreviewCoordinateMapper.forFillCenter(
-                                    hand.imageWidth, hand.imageHeight, viewport.width, viewport.height
-                                )?.map(hand) ?: hand
-                            }
-                            val candidates = hitDetector.update(latestHands, rawFrame.timestampMs)
-                            // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
-                            if (gridScanner.isCalibrated()) {
-                                for (candidate in candidates) {
-                                    val cell = gridScanner.locateCell(
-                                        GridScanner.GridPoint(candidate.point.x, candidate.point.y)
-                                    )
-                                    if (cell != null) {
-                                        val key = cell.row.toLong() * 100 + cell.step
-                                        val last = lastCellToggleMs[key] ?: 0L
-                                        if (candidate.timestampMs - last >= STEP_TOGGLE_COOLDOWN_MS) {
-                                            transport.toggleStep(cell.row, cell.step)
-                                            lastCellToggleMs[key] = candidate.timestampMs
-                                            analysisEvents.tryEmit(
-                                                AnalysisEvent.StepToggle(hapticHolder.get())
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                ),
-                imageProxyConsumer = { proxy -> proxy.close() },
-                analysisFrameCap = perfConfig.analysisFrameCap,
-                onFpsUpdate = { fps -> analysisEvents.tryEmit(AnalysisEvent.Fps(fps)) }
-            )
         )
     }
 
@@ -424,11 +238,6 @@ fun MainScreen(
 
     val permanentlyDenied = !granted && !camPermission.status.shouldShowRationale
 
-    // PreviewView reported once by CameraPreview's AndroidView factory; binding
-    // happens in a LaunchedEffect below so it re-runs when the `camera` instance
-    // is rebuilt (e.g. after a performance-tier change once settings settle).
-    var previewView by remember { mutableStateOf<PreviewView?>(null) }
-    var previewViewport by remember { mutableStateOf<PreviewViewport?>(null) }
     val mappedHands = remember(hands, previewViewport) {
         val viewport = previewViewport
         hands.map { hand ->
@@ -440,25 +249,16 @@ fun MainScreen(
         }
     }
 
-    // Unbind the old camera instance whenever it is replaced (performance tier
-    // change rebuilds `camera` via remember(settings.performanceLevel)). Without
-    // this, the stale instance keeps the Preview surface while the new tracker
-    // — whose StateFlow the UI actually collects — never receives frames.
-    DisposableEffect(camera) {
-        onDispose { camera.close() }
-    }
-
-    // Bind only while permission is granted and the destination is foreground.
-    // Disposal invalidates pending CameraProvider callbacks before unbinding.
-    DisposableEffect(performanceActive, camera, lifecycleOwner, previewView) {
+    // Bind the deep pipeline only while permission, foreground and surface are ready.
+    DisposableEffect(performanceActive, pipeline, lifecycleOwner, previewView) {
         val pv = previewView
         if (performanceActive && pv != null) {
-            camera.startPreview(lifecycleOwner, pv, viewModel::setCameraReady)
+            pipeline.start(lifecycleOwner, pv, viewModel::setCameraReady)
         } else {
             viewModel.setCameraReady(false)
         }
         onDispose {
-            camera.stopPreview()
+            pipeline.stop()
             viewModel.setCameraReady(false)
         }
     }
@@ -468,14 +268,14 @@ fun MainScreen(
     // correct bitmap rotation in FrameRouter after device rotation, since the
     // manifest uses configChanges to self-handle orientation without recreating
     // the Activity / rebinding the camera).
-    DisposableEffect(camera, previewView) {
+    DisposableEffect(pipeline, previewView) {
         val ctx = context
         val displayManager = ctx.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val listener = object : DisplayManager.DisplayListener {
             override fun onDisplayChanged(displayId: Int) {
                 val pv = previewView ?: return
                 val rotation = pv.display?.rotation ?: return
-                camera.updateTargetRotation(rotation)
+                pipeline.updateTargetRotation(rotation)
             }
             override fun onDisplayAdded(displayId: Int) = Unit
             override fun onDisplayRemoved(displayId: Int) = Unit
@@ -493,7 +293,7 @@ fun MainScreen(
                 onViewportSizeChanged = { width, height ->
                     val viewport = PreviewViewport(width, height)
                     previewViewport = viewport
-                    viewportRef.set(viewport)
+                    pipeline.updateViewport(width, height)
                 }
             )
 
@@ -506,12 +306,10 @@ fun MainScreen(
                                 val width = size.width.toFloat()
                                 val height = size.height.toFloat()
                                 if (width > 0f && height > 0f) {
-                                    pickerRequestRef.set(
-                                        PickerRequest(
-                                            x = offset.x / width,
-                                            y = offset.y / height,
-                                            presetIndex = activePresetIndex
-                                        )
+                                    pipeline.requestColorPick(
+                                        x = offset.x / width,
+                                        y = offset.y / height,
+                                        presetIndex = activePresetIndex
                                     )
                                 }
                                 pickingColor = false
@@ -708,22 +506,8 @@ fun MainScreen(
 
 /** How long a triggered zone stays highlighted on the overlay. */
 private const val FLASH_DURATION_MS = 120L
-/** Min ms between two toggles of the SAME step cell (prevents stutter-toggling). */
-private const val STEP_TOGGLE_COOLDOWN_MS = 350L
 
 private data class PreviewViewport(val width: Int, val height: Int)
-
-/** Immutable cross-thread messages from the camera analysis executor to UI. */
-private sealed interface AnalysisEvent {
-    data class Zones(val zones: List<DrumZone>) : AnalysisEvent
-    data class Fps(val value: Float) : AnalysisEvent
-    data class Metrics(val value: VisionMetrics) : AnalysisEvent
-    data class Hit(val zoneIds: List<Int>, val haptic: Boolean) : AnalysisEvent
-    data class StepToggle(val haptic: Boolean) : AnalysisEvent
-    data class ColorPicked(val presetIndex: Int, val range: HsvRange) : AnalysisEvent
-}
-
-private data class PickerRequest(val x: Float, val y: Float, val presetIndex: Int)
 
 private fun performTapHaptic(view: android.view.View) {
     view.performHapticFeedback(
