@@ -43,4 +43,4 @@
 - [x] Debug 全量门禁与签名 Release 构建通过。
 - [x] 功能分支已推送，GitHub `workflow_dispatch` 运行 `33847138811` 通过；签名 APK、SHA-256 与构建信息已上传并独立下载复核。
 - [x] 签名 Release 已安装到 PJZ110；冷启动、MediaPipe 初始化、四色快速切换与声音主观验收、后台恢复均通过。
-- [ ] 在验证提交后创建并推送 `v0.1.0-m8` 标签，核对自动公开 GitHub Release。
+- [x] 已创建并推送 `v0.1.0-m8` 标签；工作流 `33954224484` 通过，自动公开 GitHub Release 及 APK、SHA-256、构建信息均已核对。
