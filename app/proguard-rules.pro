@@ -28,9 +28,22 @@
 
 # MediaPipe model loading (uses assets path)
 -keep class com.google.mediapipe.** { *; }
+# MediaPipe's Graph initializes Flogger via stack inspection. Flogger's factory,
+# caller finder, and utility frames must remain separate; R8 inlining any part
+# of this chain makes Release builds crash during Graph initialization.
+-keep class com.google.common.flogger.** { *; }
 -dontwarn com.google.mediapipe.proto.**
 -dontwarn com.google.mediapipe.framework.GraphProfiler
 -dontwarn com.google.mediapipe.framework.Graph
+
+# protobuf-javalite 4.26.1 official shrinker contract. MediaPipe serializes
+# generated messages reflectively, so R8 must not rename their backing fields.
+-assumevalues class com.google.protobuf.Android {
+    static boolean ASSUME_ANDROID return true;
+}
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
 
 # OpenCV (uses JNI)
 -keep class org.opencv.** { *; }

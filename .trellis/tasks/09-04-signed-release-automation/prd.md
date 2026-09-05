@@ -40,7 +40,7 @@
 - [x] 标签与版本不一致时发布校验阻止发布；`v0.1.0-m8` 可生成签名 APK、SHA-256 与构建信息。
 - [ ] 标签流程全自动创建普通公开 GitHub Release 并上传完整产物，不标记 Pre-release/Draft；手动流程只上传 Actions 构件。
 - [x] 内测标签不因三档设备数据未齐而失败；发布说明明确标注当前为内测里程碑，不伪称稳定版。
-- [ ] 签名 APK 在 PJZ110 安装、启动、四色快速切换演奏和后台恢复正常。
+- [x] 签名 APK 在 PJZ110 安装、启动、四色快速切换演奏和后台恢复正常。
 - [x] 单元测试、Lint、Debug 构建和启用原生音频的 Release 构建全部通过。
 
 ## Constraints
@@ -72,13 +72,17 @@
 
 ## Local Verification Evidence
 
-- 签名 Release：`app-release.apk`，46,869,227 bytes（约 44.7 MiB），低于 80 MB 门槛。
-- APK SHA-256：`179e273e8239f5ddf89346ea860df79dd7711396223a5f25d75f223e85a4d59c`。
+- 最终修复后的签名 Release：`app-release.apk`，46,901,995 bytes（约 44.7 MiB），低于 80 MB 门槛。
+- 最终本地 APK SHA-256：`32036741e72b4ba3fa5da30b8e8d1d60ecf1afdeceff33b19ca1e233cb5a17ea`。
 - `apksigner`：v2 签名验证通过，1 个 signer，证书 SHA-256 与 Signing Identity 一致。
 - APK 元数据：`versionName=0.1.0-m8`、`versionCode=3`；`v0.1.0-m8` 通过，错误标签以退出码 65 阻断。
 - 缺少本地签名配置时 `preReleaseBuild` 明确失败；通用 `assemble` 依赖图包含同一门禁，不能绕过。
 - Gradle 配置缓存可复用，并能在 `keystore.properties` 新增/移除时正确失效。
 - GitHub 仓库已配置四项 Actions Secrets；CLI 只验证名称与更新时间，未读取或输出远程值。
 - GitHub `workflow_dispatch` 运行 `33847138811` 全部通过；Debug 门禁与签名 Release 作业分别通过，手动流程按设计跳过公开 Release。
+- R8 修复提交对应的 GitHub `workflow_dispatch` 运行 `33892043936` 全部通过；新增的 Release 收缩契约检查通过，远程构件 `void-music-release-11` 与 `void-music-debug-11` 已上传且未过期。
 - 远程构件 `void-music-release-8` 已独立下载复核：ZIP 完整、APK SHA-256 为 `18c6d33fcb3a74659483ea3b93f2414b1e575884a4aa82ddfef04ac8643255f8` 且 `SHA256SUMS` 校验通过；`BUILD-INFO.txt` 指向提交 `86bf15a196e900f587182086ddf996bb250a90e6`，APK 为 `versionName=0.1.0-m8`、`versionCode=3`。
 - 远程 APK 经本地 `apksigner` 二次验证：v2 签名有效、仅 1 个 signer、RSA 4096，证书 SHA-256 与 Signing Identity 一致。
+- PJZ110 真机暴露并验证修复了两项仅在压缩 Release 出现的问题：Flogger 调用栈被 R8 改写导致 MediaPipe `Graph` 初始化崩溃；Protobuf Lite 字段名被改写导致手部模型 GPU/CPU 均初始化失败。
+- 最终修复包冷启动超过原 15 秒崩溃窗口后进程存活、`MainActivity` 保持前台、crash 缓冲区为空且 `HandTracker` 无初始化错误；进入后台再恢复后 PID 保持不变且无新增错误。
+- 用户在 PJZ110 上完成四色快速交替击打，确认各颜色可正常切换点击并连续响应；本轮应用进程持续存活，未发现崩溃、MediaPipe/手部跟踪或音频引擎错误。
