@@ -84,12 +84,12 @@
 
 ## 阶段 3 — 测量驱动性能优化（P2）
 
-- [ ] 为 FrameRouter 补充 consumer 异常、ImageProxy 必然关闭和生命周期测试。
-- [ ] 为 ColorSegmenter 增加真实 OpenCV 合成图测试。
-- [ ] 记录 Bitmap/MPImage 实际生命周期和分配热点。
-- [ ] 优先复用色块缩放 Mat、hierarchy 和阈值工作区。
-- [ ] 实现空闲低频、变化立即刷新的自适应色块分割。
-- [ ] 仅在确认异步消费完成点后实施 Bitmap/MPImage 复用或显式释放。
+- [x] 为 FrameRouter 补充 consumer 异常、ImageProxy 必然关闭和生命周期测试。
+- [x] 为 ColorSegmenter 增加真实 OpenCV 合成图测试。
+- [x] 记录 Bitmap/MPImage 实际生命周期和分配热点。
+- [x] 优先复用色块缩放 Mat、hierarchy 和阈值工作区。
+- [x] 实现空闲低频、变化立即刷新的自适应色块分割。
+- [x] 仅在确认异步消费完成点后实施 Bitmap/MPImage 复用或显式释放。
 - [ ] 对比优化前后高/中/低三档真机指标。
 
 阶段质量门：性能报告可复现；没有数据支持或导致首次识别变慢的优化不合入。

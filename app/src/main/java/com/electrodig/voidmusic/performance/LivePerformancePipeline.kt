@@ -88,6 +88,7 @@ class LivePerformancePipeline(
     private val cachedZones = AtomicReference<List<DrumZone>>(emptyList())
     private val cachedZonesTimestampMs = AtomicLong(Long.MIN_VALUE)
     private val segmenter = AtomicReference<ColorSegmenter?>(null)
+    private val segmentationCadence = SegmentationCadence(performanceConfig.analysisFrameCap)
     private val metricsRecorder = VisionMetricsRecorder()
     private val zoneTracker = ZoneTracker()
     private val tapHitProcessor = TapHitProcessor(
@@ -96,7 +97,6 @@ class LivePerformancePipeline(
     )
     private val stepHitDetector = HitDetector(hitVelocityThreshold, hitCooldownMs)
     private val lastCellToggleMs = HashMap<Long, Long>()
-    private var zoneFrameCounter = 0
 
     private val mutableEvents = MutableSharedFlow<LivePerformanceEvent>(
         extraBufferCapacity = 32,
@@ -165,14 +165,15 @@ class LivePerformancePipeline(
         cachedZones.set(emptyList())
         cachedZonesTimestampMs.set(Long.MIN_VALUE)
         pickerRequest.set(null)
-        zoneFrameCounter = 0
+        segmentationCadence.reset()
         lastCellToggleMs.clear()
         mutableEvents.tryEmit(LivePerformanceEvent.Zones(emptyList()))
     }
 
     /** Updates mode and colour thresholds as one coherent analysis snapshot. */
     fun updateInputs(value: LivePerformanceInputs) {
-        inputs.set(value)
+        val previous = inputs.getAndSet(value)
+        if (previous != value) segmentationCadence.invalidate()
     }
 
     /** Updates the PreviewView size used for source/display coordinate mapping. */
@@ -232,14 +233,14 @@ class LivePerformancePipeline(
             }
         }
 
-        zoneFrameCounter++
-        if (zoneFrameCounter % SEGMENTATION_INTERVAL_FRAMES == 0) {
+        if (segmentationCadence.shouldSegment()) {
             val activeSegmenter = segmenter.get() ?: return
             val segmentStartMs = SystemClock.elapsedRealtime()
             val trackedZones = zoneTracker.update(
                 activeSegmenter.segment(bitmap, inputs.get().detectionConfig),
                 timestampMs
             )
+            segmentationCadence.record(trackedZones)
             metricsRecorder.recordSegmentation(SystemClock.elapsedRealtime() - segmentStartMs)
                 ?.let { mutableEvents.tryEmit(LivePerformanceEvent.Metrics(it)) }
             cachedZones.set(trackedZones)
@@ -285,7 +286,6 @@ class LivePerformancePipeline(
     }
 
     private companion object {
-        const val SEGMENTATION_INTERVAL_FRAMES = 3
         const val STEP_TOGGLE_COOLDOWN_MS = 350L
     }
 }

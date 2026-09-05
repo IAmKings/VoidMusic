@@ -1,6 +1,7 @@
 package com.electrodig.voidmusic.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class FrameRouterTest {
@@ -110,5 +111,58 @@ class FrameRouterTest {
         assertEquals(true, gate.shouldSubmit(0L))
         assertEquals(false, gate.shouldSubmit(10_000_000L))
         assertEquals(true, gate.shouldSubmit(5_000_000_000L))
+    }
+
+    @Test
+    fun `consumer failure is isolated and frame closes exactly once`() {
+        val frame = Any()
+        val visited = mutableListOf<Int>()
+        val failures = mutableListOf<Pair<Int, Throwable>>()
+        var closeCount = 0
+        val failure = IllegalStateException("broken consumer")
+
+        dispatchFrame(
+            frame = frame,
+            consumers = listOf(0, 1, 2),
+            consume = { consumer, receivedFrame ->
+                assertSame(frame, receivedFrame)
+                if (consumer == 1) throw failure
+                visited += consumer
+            },
+            onConsumerFailure = { index, error -> failures += index to error },
+            closeFrame = { closeCount++ }
+        )
+
+        assertEquals(listOf(0, 2), visited)
+        assertEquals(listOf(1 to failure), failures)
+        assertEquals(1, closeCount)
+    }
+
+    @Test
+    fun `frame closes even when every consumer fails`() {
+        var closeCount = 0
+
+        dispatchFrame(
+            frame = "frame",
+            consumers = listOf("hand", "colour"),
+            consume = { _, _ -> error("failure") },
+            closeFrame = { closeCount++ }
+        )
+
+        assertEquals(1, closeCount)
+    }
+
+    @Test
+    fun `frame closes when there are no consumers`() {
+        var closedFrame: String? = null
+
+        dispatchFrame(
+            frame = "frame",
+            consumers = emptyList<Unit>(),
+            consume = { _, _ -> Unit },
+            closeFrame = { closedFrame = it }
+        )
+
+        assertEquals("frame", closedFrame)
     }
 }

@@ -119,6 +119,11 @@ class HandTracker(
         }
 
         runCatching {
+            // HandLandmarker creates the native input packet synchronously
+            // before detectAsync returns. Do not close this MPImage wrapper:
+            // BitmapImageBuilder transfers bitmap ownership to it, while the
+            // shared source bitmap remains owned by FrameRouter and is also
+            // needed by the colour consumer in the same dispatch.
             detector.detectAsync(mpImage, timestampMs)
         }.onFailure {
             Log.w(TAG, "detectAsync failed", it)
@@ -141,35 +146,41 @@ class HandTracker(
     }
 
     private fun onResult(result: HandLandmarkerResult, input: MPImage) {
-        val callbackCompletedAtMs = SystemClock.elapsedRealtime()
-        val width = input.width
-        val height = input.height
-        val landmarkSets = result.landmarks()
-        if (landmarkSets.isEmpty()) {
-            publish(emptyList(), width, height, result.timestampMs(), callbackCompletedAtMs)
-            return
-        }
-
-        val handednessSets = result.handednesses()
-        val hands = ArrayList<Hand>(landmarkSets.size)
-        for (i in landmarkSets.indices) {
-            val rawLandmarks = landmarkSets[i]
-            val handedness = handednessSets
-                .getOrNull(i)
-                ?.firstOrNull()?.categoryName()
-                ?: "Unknown"
-
-            val landmarks = rawLandmarks.map { lm ->
-                NormalizedLandmark(lm.x(), lm.y(), lm.z())
+        try {
+            val callbackCompletedAtMs = SystemClock.elapsedRealtime()
+            val width = input.width
+            val height = input.height
+            val landmarkSets = result.landmarks()
+            if (landmarkSets.isEmpty()) {
+                publish(emptyList(), width, height, result.timestampMs(), callbackCompletedAtMs)
+                return
             }
-            hands += Hand(
-                landmarks = landmarks,
-                handedness = handedness,
-                imageWidth = width,
-                imageHeight = height
-            )
+
+            val handednessSets = result.handednesses()
+            val hands = ArrayList<Hand>(landmarkSets.size)
+            for (i in landmarkSets.indices) {
+                val rawLandmarks = landmarkSets[i]
+                val handedness = handednessSets
+                    .getOrNull(i)
+                    ?.firstOrNull()?.categoryName()
+                    ?: "Unknown"
+
+                val landmarks = rawLandmarks.map { lm ->
+                    NormalizedLandmark(lm.x(), lm.y(), lm.z())
+                }
+                hands += Hand(
+                    landmarks = landmarks,
+                    handedness = handedness,
+                    imageWidth = width,
+                    imageHeight = height
+                )
+            }
+            publish(hands, width, height, result.timestampMs(), callbackCompletedAtMs)
+        } finally {
+            // LIVE_STREAM returns a new output MPImage backed by its own Bitmap.
+            // It is not the shared FrameRouter input and must be closed here.
+            input.close()
         }
-        publish(hands, width, height, result.timestampMs(), callbackCompletedAtMs)
     }
 
     private fun publish(

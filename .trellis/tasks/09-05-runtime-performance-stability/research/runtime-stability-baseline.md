@@ -69,3 +69,27 @@
 - 前台恢复后分析 FPS 为 15，音频保持 Oboe，`droppedTriggers=0`、`xRun=0`。
 - 完成 5 次前台/后台循环，PID 保持 26288，Crash buffer 为空；恢复后 FPS 回到 15。
 - ColorSegmenter 改为每次 Pipeline start 新建、stop 释放，消除了关闭后复用已释放 OpenCV Mat 的隐患。
+
+## 阶段 3 热路径优化记录
+
+### 资源所有权结论
+
+- CameraX `ImageProxy.toBitmap()` 产生的原始 Bitmap 和旋转后的共享 Bitmap 均由 FrameRouter 所有。
+- MediaPipe 0.10.35 的 `BaseVisionTaskApi.sendLiveStreamData()` 在 `detectAsync()` 返回前同步调用 `AndroidPacketCreator.createImage(MPImage)`，因此原生输入包已在消费者返回前创建。
+- `BitmapImageBuilder` 只包装传入 Bitmap；关闭该输入 MPImage 会回收共享 Bitmap，因此不能在 HandTracker 内关闭输入包装器。FrameRouter 在手部与色块消费者都返回后统一回收共享 Bitmap。
+- MediaPipe 结果监听器收到的是从输出 image packet 新建的 Bitmap/MPImage，不是共享输入；该对象现已在回调 `finally` 中关闭。
+- 旧色块路径每次降采样都会创建缩放 Bitmap，每个 preset 都会创建 hierarchy Mat 与轮廓 List；现改为复用缩放 Mat、hierarchy、轮廓容器和既有阈值 Mat。
+
+### 自动化与真机结果
+
+- FrameRouter JVM 测试覆盖单个/全部 consumer 异常、后续 consumer 继续执行和 frame 必然只关闭一次。
+- SegmentationCadence JVM 测试覆盖首次立即分割、15/30 FPS 稳态频率、配置失效立即刷新和场景变化恢复活跃频率。
+- PJZ110 真机 OpenCV 合成图测试通过：0.5 倍降采样、连续 3 轮工作区复用时均能识别红/蓝色块。
+- 最终签名 Release 冷启动 `am start -W` TotalTime 97 ms，APK SHA-256 为 `f22f0fc38667f98d0a26d6ffbe62cb435af41487b9616255fa55800752039eec`。
+- 无物体/无手的稳定空闲画面，HUD 最终稳定在分析/手部结果 15 FPS（短暂观察到 21 FPS）；采集→手部 P50/P95 为 136/156 ms，回调→消费为 0/0 ms，分割为 1/2 ms。空轮廓场景不可与旧真实物件 27/39 ms 分割基线直接对比。
+- 5 次前台/后台恢复后 PID 为 21281，进程存活，Crash buffer 与 FrameRouter/HandTracker 错误日志为空。
+- 首个活跃快照：TOTAL PSS 277,115 KiB、Native Heap PSS 67,582 KiB、Bitmap 15 个/27,622 KiB。继续运行并经过 GC 后复采为 TOTAL PSS 188,175 KiB、Native Heap PSS 80,619 KiB、Bitmap 6 个/177 KiB；Bitmap 数量与占用下降而非持续增长，说明逐帧共享 Bitmap 已可回收。两次采集时相机、OpenCV、MediaPipe 与 GPU 均已活跃，仍不能与仅 Activity 冷启动的旧内存快照直接比较。
+- 本轮 connected test 首次因设备已有 Release 签名与 debug test 包不一致而失败；测试框架卸载了旧包，可能清除本地应用数据。随后测试通过，并已重新安装签名 Release。
+- 提交前组合执行测试、Lint 和 Release 时，Android Lint 对 instrumented test 发生一次 Kotlin FIR 内部分析异常；相同文件此前已通过，拆分后使用 `lintDebug --rerun-tasks` 完整通过，确认是工具链并行/缓存偶发故障而非代码告警。
+
+仍需在固定彩色物品、光照和实际击打场景下采集三档分割 P50/P95、缓存年龄、击打提交延迟、温升和 20 分钟结果；当前 21 FPS 空闲数据不替代完整设备矩阵。

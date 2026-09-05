@@ -3,6 +3,9 @@ package com.electrodig.voidmusic.detection.hit
 import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.hand.TimestampedHands
 
+/** Shared freshness ceiling for colour-zone snapshots used by TAP hit resolution. */
+internal const val MAX_HIT_ZONE_AGE_MS = 260L
+
 /** Immutable, normalized hit-test state published by the camera pipeline. */
 data class HitSnapshot(
     val zones: List<DrumZone> = emptyList(),
@@ -18,7 +21,7 @@ class TapHitProcessor(
     private val detector: HitDetector,
     private val arbiter: HitArbiter,
     private val maxHandResultAgeMs: Long = HARD_MAX_HAND_RESULT_AGE_MS,
-    private val maxZoneAgeMs: Long = MAX_ZONE_AGE_MS
+    private val maxZoneAgeMs: Long = MAX_HIT_ZONE_AGE_MS
 ) {
     private var estimatedHandResultAgeMs: Float? = null
 
@@ -70,6 +73,5 @@ class TapHitProcessor(
         const val HARD_MAX_HAND_RESULT_AGE_MS = 260L
         const val HAND_RESULT_JITTER_MARGIN_MS = 40L
         const val AGE_ESTIMATE_ALPHA = 0.25f
-        const val MAX_ZONE_AGE_MS = 260L
     }
 }

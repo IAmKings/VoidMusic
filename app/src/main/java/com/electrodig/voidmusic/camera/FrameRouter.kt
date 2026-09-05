@@ -55,21 +55,29 @@ class FrameRouter(
             rotateBitmapForDisplay(raw, image.imageInfo.rotationDegrees)
         }.getOrElse {
             Log.w(TAG, "Frame rotation failed", it)
+            raw.recycle()
             imageProxyConsumer(image)
             return
         }
-        try {
-            // Isolate each consumer so one throwing (e.g. an OpenCV op in the
-            // colour/hit path) cannot abort the loop and leak the ImageProxy —
-            // a leaked proxy under STRATEGY_KEEP_ONLY_LATEST stalls the camera
-            // and freezes the entire detection pipeline (incl. hand tracking).
-            bitmapConsumers.forEachIndexed { i, consumer ->
-                runCatching { consumer(bitmap, image) }
-                    .onFailure { Log.w(TAG, "consumer[$i] threw on frame, skipping", it) }
+        if (bitmap !== raw) raw.recycle()
+        dispatchFrame(
+            frame = bitmap,
+            consumers = bitmapConsumers,
+            consume = { consumer, frame -> consumer(frame, image) },
+            onConsumerFailure = { index, error ->
+                Log.w(TAG, "consumer[$index] threw on frame, skipping", error)
+            },
+            closeFrame = {
+                // MediaPipe copies the input into its native packet before
+                // detectAsync returns. All bitmap consumers are therefore done
+                // before this shared camera bitmap is recycled.
+                try {
+                    bitmap.recycle()
+                } finally {
+                    imageProxyConsumer(image)
+                }
             }
-        } finally {
-            imageProxyConsumer(image)
-        }
+        )
 
         // FPS tracking.
         frameCount++
@@ -84,6 +92,33 @@ class FrameRouter(
     }
 
     private companion object { const val TAG = "FrameRouter" }
+}
+
+/**
+ * Runs every consumer independently and closes the frame exactly once.
+ *
+ * Kept Android-free so failure isolation and resource ownership can be covered
+ * by local JVM tests. [consume] is inline at the camera call site, avoiding a
+ * wrapper object or transformed consumer list on every frame.
+ */
+internal inline fun <F, C> dispatchFrame(
+    frame: F,
+    consumers: List<C>,
+    consume: (C, F) -> Unit,
+    onConsumerFailure: (index: Int, error: Throwable) -> Unit = { _, _ -> },
+    closeFrame: (F) -> Unit
+) {
+    try {
+        consumers.forEachIndexed { index, consumer ->
+            try {
+                consume(consumer, frame)
+            } catch (error: Throwable) {
+                onConsumerFailure(index, error)
+            }
+        }
+    } finally {
+        closeFrame(frame)
+    }
 }
 
 /**

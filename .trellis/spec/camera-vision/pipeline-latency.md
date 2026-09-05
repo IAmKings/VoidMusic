@@ -15,9 +15,11 @@ CameraX ImageAnalysis (sensor space, rotationDegrees=D)
     → rotateBitmapForDisplay(raw, D)      [→ screen space; 0° short-circuits]
     → consumer[0] HandTracker.detectAsync [async, non-blocking]
     → consumer[1] ColorSegmenter.segment  [SYNC, blocking OpenCV]
+    → recycle shared Bitmap + close ImageProxy exactly once
   → MediaPipe async callback
     → OneEuroHandStabilizer.smooth        [low-pass filter: latency vs smoothness]
     → _hands StateFlow
+    → close MediaPipe output MPImage
   → Compose collectAsState → HandOverlay Canvas redraw
 ```
 
@@ -43,6 +45,9 @@ CameraX ImageAnalysis (sensor space, rotationDegrees=D)
 - Rotation MUST be applied exactly once, at the FrameRouter fan-out point, so
   all downstream consumers (hand / zone / hit / overlay) share one screen-space
   coordinate system.
+- `FrameRouter` owns both the raw/rotated Bitmap and ImageProxy. It recycles the
+  shared Bitmap only after every synchronous consumer returns, then closes the
+  proxy exactly once even when a consumer throws.
 - `rotateBitmapForDisplay(bitmap, 0)` MUST return the same reference (zero
   allocation) — the common "already aligned" case.
 - `normalisedRotationDegrees(degrees)` is the pure-function short-circuit gate;
@@ -101,10 +106,88 @@ frame causes 30 FPS input with a 20 FPS cap to degrade to 15 FPS.
 `Utils.bitmapToMat()` writes the Android bitmap to a reusable 4-channel Mat.
 On the bundled OpenCV 4.13 binding, use `COLOR_RGB2HSV` directly on that
 3-or-4-channel input (alpha is ignored); do not copy through `IntArray` /
-`ByteArray` or convert RGBA→BGR first. Reuse RGBA, HSV, and threshold Mats and
-release every retained Mat from `ColorSegmenter.close()`. `ColorSegmenter` is
-created during Compose composition before the `LaunchedEffect` that loads
-OpenCV, so all native `Mat` allocation must be lazy inside `segment()`.
+`ByteArray` or convert RGBA→BGR first. Downsample with `Imgproc.resize()` into a
+retained Mat; do not create and recycle a scaled Bitmap on every segmentation.
+Reuse RGBA, scaled RGBA, HSV, hierarchy, contour-list, and threshold workspaces,
+and release every retained native object from `ColorSegmenter.close()`.
+`ColorSegmenter` is created during Compose composition before the
+`LaunchedEffect` that loads OpenCV, so all native `Mat` allocation must be lazy
+inside `segment()`.
+
+## Scenario: Frame Ownership and Adaptive Colour Segmentation
+
+### 1. Scope / Trigger
+
+- Applies when changing `FrameRouter`, `HandTracker.detect`, MediaPipe callbacks,
+  `ColorSegmenter`, segmentation cadence, or TAP zone freshness.
+- Prevents Bitmap/MPImage use-after-close, CameraX stalls, native Mat leaks, and
+  silent notes caused by an over-age zone cache.
+
+### 2. Signatures
+
+- `dispatchFrame(frame, consumers, consume, onConsumerFailure, closeFrame)`
+- `HandTracker.detect(bitmap: Bitmap, timestampMs: Long)`
+- `SegmentationCadence.shouldSegment(): Boolean`
+- `SegmentationCadence.record(zones: List<DrumZone>)`
+- `SegmentationCadence.invalidate()` / `reset()`
+
+### 3. Contracts
+
+| Owner | Contract |
+|---|---|
+| `FrameRouter` | Owns `ImageProxy`, raw Bitmap, and rotated shared Bitmap; every accepted frame is closed/recycled exactly once after fan-out. |
+| HandTracker input wrapper | `BitmapImageBuilder` wraps the borrowed shared Bitmap. MediaPipe 0.10.35 synchronously creates its native packet before `detectAsync` returns; do not close this wrapper because `MPImage.close()` would recycle the shared Bitmap before the colour consumer finishes. |
+| HandTracker callback input | The listener receives a new output MPImage backed by its own Bitmap; close it in `finally` after reading dimensions and publishing results. |
+| ColorSegmenter | Retained Mats and contour wrappers stay on its synchronized analysis path and are released by idempotent `close()`. |
+| Cadence | First frame and every input/config invalidation segment immediately. Stable scenes may back off only within `MAX_HIT_ZONE_AGE_MS` minus the scheduling/jitter margin. |
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Bitmap conversion fails | Close ImageProxy; publish no partial frame. |
+| Rotation fails after raw Bitmap creation | Recycle raw Bitmap and close ImageProxy. |
+| One consumer throws | Record the failure, continue later consumers, then recycle/close once. |
+| MediaPipe callback publishes no hands or throws downstream | Close callback MPImage in `finally`. |
+| HSV config or TAP/STEP mode changes | Force segmentation on the next accepted frame. |
+| Stable cadence would exceed the hit-cache budget | Clamp interval using frame cap and the freshness margin. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: stable 30 FPS scene segments every fifth frame (about 167 ms), then an
+  HSV change forces the next frame immediately.
+- Base: low-tier 15 FPS scene segments every frame while changing and every
+  third frame when stable, leaving 60 ms scheduling margin below the 260 ms ceiling.
+- Bad: close the `BitmapImageBuilder` input inside `detect()`; this recycles the
+  bitmap while the serial colour consumer still needs it.
+
+### 6. Tests Required
+
+- JVM: consumer failure isolation, later-consumer execution, and exactly-once
+  close for failing, successful, and empty dispatches.
+- JVM: first-frame submission, stable low/high cadence, invalidation, and scene
+  movement returning to active cadence.
+- Instrumented: real OpenCV synthetic red/blue objects remain detectable across
+  repeated workspace reuse.
+- Release device: camera/MediaPipe stays alive after foreground/background
+  cycles; crash buffer and frame-consumer errors remain empty.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```kotlin
+BitmapImageBuilder(bitmap).build().use { landmarker.detectAsync(it, timestampMs) }
+val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+```
+
+#### Correct
+
+```kotlin
+// FrameRouter owns and later recycles the borrowed Bitmap.
+landmarker.detectAsync(BitmapImageBuilder(bitmap).build(), timestampMs)
+Imgproc.resize(rgba, scaledRgba, targetSize)
+```
 
 ## Common Mistakes
 
@@ -203,7 +286,7 @@ tolerance is acceptable.
 | Same-zone retrigger | Default 70 ms in `HitArbiter`; different zones do not share this cooldown. |
 | Hand-result age | `consumedAtMs - frame.timestampMs` uses a 140 ms target, recent baseline + 40 ms jitter margin, and a 260 ms hard ceiling. Callback completion time is metrics-only. |
 | Zone age | `consumedAtMs - snapshot.zoneTimestampMs` must be within `0..260` ms. |
-| Medium frame cap | 24 FPS target; colour segmentation remains every third accepted frame. |
+| Segmentation cadence | First/config-changed frames are immediate; active scenes use 1–2 frames and stable scenes expand only within the shared 260 ms cache ceiling minus a 60 ms scheduling/jitter margin. |
 | Persisted tuning | Version 1 defaults are threshold `0.50` and rearm `60 ms`; legacy default pairs migrate once, custom pairs are preserved. |
 
 ### 4. Validation & Error Matrix
