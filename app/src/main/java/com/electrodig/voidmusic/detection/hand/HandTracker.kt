@@ -53,6 +53,7 @@ class HandTracker(
      * Lazily builds the [HandLandmarker]. Call after the camera is ready or on
      * first frame. Uses the GPU delegate where available for lower latency.
      */
+    @Synchronized
     fun setup() {
         if (landmarker != null) return
         try {
@@ -107,6 +108,7 @@ class HandTracker(
      * camera layer (FrameRouter); [timestampMs] must be monotonic. The caller
      * owns the source [ImageProxy] lifecycle.
      */
+    @Synchronized
     fun detect(bitmap: android.graphics.Bitmap, timestampMs: Long) {
         val detector = landmarker ?: run { setup(); landmarker } ?: return
 
@@ -130,6 +132,7 @@ class HandTracker(
     fun drainRawHandFrames(): List<TimestampedHands> = pendingRawFrames.drain()
 
     /** Release native resources (PRD §4.4: release on background/cleanup). */
+    @Synchronized
     fun close() {
         landmarker?.close()
         landmarker = null

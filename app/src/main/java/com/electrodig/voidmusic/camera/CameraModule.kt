@@ -13,7 +13,9 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Lifecycle-aware wrapper around CameraX that binds a [Preview] and an
@@ -33,15 +35,23 @@ class CameraModule(
     private val targetResolution: Size? = null,
     private val analyzer: ImageAnalysis.Analyzer? = null
 ) {
+    private val moduleId = MODULE_SEQUENCE.incrementAndGet()
+    private val workerSequence = AtomicInteger()
 
     private val mainExecutor: Executor by lazy {
         ContextCompat.getMainExecutor(context)
     }
 
     /** Dedicated single-thread executor for image analysis (keeps UI smooth). */
-    private val analysisExecutor: Executor by lazy {
-        Executors.newSingleThreadExecutor()
+    // Keep allocation lazy: Compose may abandon an uncommitted composition, in
+    // which case DisposableEffect never owns the newly remembered module.
+    private val analysisExecutorDelegate = lazy<ExecutorService> {
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "VM-Cam-$moduleId-${workerSequence.incrementAndGet()}")
+        }
     }
+    private val analysisExecutor: ExecutorService get() = analysisExecutorDelegate.value
+    private val bindingGate = CameraBindingGate()
 
     private var provider: ProcessCameraProvider? = null
     /** Bound use cases, retained so targetRotation can be updated without rebinding. */
@@ -66,14 +76,24 @@ class CameraModule(
      * actual device orientation from the first frame. Use [updateTargetRotation]
      * when the display rotates later — no rebind required.
      */
-    fun startPreview(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
+    fun startPreview(
+        lifecycleOwner: LifecycleOwner,
+        previewView: PreviewView,
+        onBound: (Boolean) -> Unit = {}
+    ) {
+        val request = bindingGate.beginRequest() ?: run {
+            onBound(false)
+            return
+        }
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener(
             {
+                if (!bindingGate.isCurrent(request)) return@addListener
                 try {
                     val p = future.get()
+                    if (!bindingGate.isCurrent(request)) return@addListener
+                    releaseUseCases()
                     provider = p
-                    p.unbindAll()
 
                     val targetRotation = previewView.display?.rotation ?: Surface.ROTATION_0
 
@@ -111,6 +131,7 @@ class CameraModule(
                     }
 
                     p.bindToLifecycle(lifecycleOwner, selector, *useCases.toTypedArray())
+                    onBound(true)
                     Log.i(
                         TAG,
                         "Bound preview%s to %s camera%s @ rotation %d".format(
@@ -121,7 +142,11 @@ class CameraModule(
                         )
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to bind camera use cases", e)
+                    if (bindingGate.isCurrent(request)) {
+                        releaseUseCases()
+                        onBound(false)
+                        Log.e(TAG, "Failed to bind camera use cases", e)
+                    }
                 }
             },
             mainExecutor
@@ -138,9 +163,29 @@ class CameraModule(
         analysis?.targetRotation = rotation
     }
 
-    /** Releases camera resources (PRD §4.4: background = release). */
-    fun stop() {
-        provider?.unbindAll()
+    /** Suspends preview and analysis while allowing a later restart. */
+    fun stopPreview() {
+        bindingGate.cancelPending()
+        releaseUseCases()
+    }
+
+    /** Final, idempotent release. A closed module cannot be restarted. */
+    fun close() {
+        if (!bindingGate.close()) return
+        releaseUseCases()
+        provider = null
+        if (analysisExecutorDelegate.isInitialized()) {
+            analysisExecutorDelegate.value.shutdownNow()
+        }
+    }
+
+    private fun releaseUseCases() {
+        analysis?.clearAnalyzer()
+        val ownedUseCases = listOfNotNull(preview, analysis)
+        if (ownedUseCases.isNotEmpty()) {
+            runCatching { provider?.unbind(*ownedUseCases.toTypedArray()) }
+                .onFailure { Log.w(TAG, "Failed to unbind camera use cases", it) }
+        }
         preview = null
         analysis = null
     }
@@ -154,5 +199,6 @@ class CameraModule(
 
     companion object {
         private const val TAG = "CameraModule"
+        private val MODULE_SEQUENCE = AtomicInteger()
     }
 }

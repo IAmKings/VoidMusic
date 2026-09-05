@@ -8,9 +8,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.electrodig.voidmusic.session.SessionViewModel
 import com.electrodig.voidmusic.ui.nav.initialDestination
@@ -34,7 +34,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             VoidMusicTheme {
                 val viewModel: SessionViewModel = viewModel()
-                val onboardingState by viewModel.onboardingState.collectAsState()
+                val onboardingState by viewModel.onboardingState.collectAsStateWithLifecycle()
 
                 if (onboardingState.isLoaded) {
                     VoidMusicNavHost(

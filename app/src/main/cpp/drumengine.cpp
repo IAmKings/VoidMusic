@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #define TAG "DrumEngineNative"
@@ -33,6 +34,7 @@ struct Voice {
     const std::vector<float>* sample = nullptr;
     int   pos = 0;
     float gain = 1.0f;
+    uint64_t startedAt = 0;
     // Voice state is owned exclusively by the audio callback. JNI producers
     // communicate through TriggerQueue, so this intentionally needs no atomics.
     bool active = false;
@@ -41,6 +43,7 @@ struct Voice {
 struct TriggerCommand {
     int padOrdinal = 0;
     float velocity = 1.0f;
+    uint64_t epoch = 0;
 };
 
 /**
@@ -120,13 +123,21 @@ struct Engine {
     std::array<Voice, kMaxVoices> voices; // callback-owned pool, reused
     TriggerQueue triggers;
     std::atomic<uint64_t> droppedTriggers{0};
+    std::atomic<uint64_t> triggerEpoch{0};
+    std::atomic<bool> acceptingTriggers{false};
     std::atomic<float> master{1.0f};
     std::shared_ptr<oboe::AudioStream> stream;
+    std::atomic<int32_t> lastStreamError{0};
+    std::atomic<int64_t> lastXRunCount{0};
     oboe::AudioFormat format = oboe::AudioFormat::Float;
     int channelCount = 1;
+    uint64_t nextVoiceSequence = 0; // callback-owned; used for oldest-voice stealing
 };
 
 Engine g_engine;
+// Only control/JNI threads touch the stream pointer through this mutex. The
+// real-time callback never locks.
+std::mutex g_streamMutex;
 
 Voice& acquireVoice();
 
@@ -145,6 +156,7 @@ public:
 
             TriggerCommand command;
             while (eng.triggers.dequeue(command)) {
+                if (command.epoch != eng.triggerEpoch.load(std::memory_order_relaxed)) continue;
                 if (command.padOrdinal < 0 || command.padOrdinal >= kPadCount) continue;
                 const auto& sample = eng.samples[command.padOrdinal];
                 if (sample.empty()) continue;
@@ -152,6 +164,7 @@ public:
                 voice.sample = &sample;
                 voice.pos = 0;
                 voice.gain = 0.4f + 0.6f * std::clamp(command.velocity, 0.0f, 1.0f);
+                voice.startedAt = eng.nextVoiceSequence++;
                 voice.active = true;
             }
 
@@ -177,6 +190,7 @@ public:
             for (int i = 0; i < numFrames * eng.channelCount; ++i) out[i] = 0;
             TriggerCommand command;
             while (eng.triggers.dequeue(command)) {
+                if (command.epoch != eng.triggerEpoch.load(std::memory_order_relaxed)) continue;
                 if (command.padOrdinal < 0 || command.padOrdinal >= kPadCount) continue;
                 const auto& sample = eng.samples[command.padOrdinal];
                 if (sample.empty()) continue;
@@ -184,6 +198,7 @@ public:
                 voice.sample = &sample;
                 voice.pos = 0;
                 voice.gain = 0.4f + 0.6f * std::clamp(command.velocity, 0.0f, 1.0f);
+                voice.startedAt = eng.nextVoiceSequence++;
                 voice.active = true;
             }
 
@@ -210,6 +225,8 @@ public:
     }
 
     void onErrorAfterClose(oboe::AudioStream*, oboe::Result result) override {
+        g_engine.lastStreamError.store(
+                static_cast<int32_t>(result), std::memory_order_release);
         LOGE("Audio stream error: %s", oboe::convertToText(result));
     }
 };
@@ -220,8 +237,11 @@ DrumCallback g_callback;
 Voice& acquireVoice() {
     auto& vs = g_engine.voices;
     for (auto& v : vs) if (!v.active) return v;
-    // All busy: steal the first (oldest).
-    return vs.front();
+    // All busy: steal the voice that actually started first. Reusing a fixed
+    // slot can repeatedly cut the same fresh hit during dense performances.
+    return *std::min_element(vs.begin(), vs.end(), [](const Voice& left, const Voice& right) {
+        return left.startedAt < right.startedAt;
+    });
 }
 
 } // namespace
@@ -267,8 +287,12 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
 
     // ---- Voice pool / producer queue ----
     for (auto& voice : g_engine.voices) voice = Voice{};
-    g_engine.triggers.reset();
+    g_engine.acceptingTriggers.store(false, std::memory_order_release);
+    g_engine.triggerEpoch.fetch_add(1, std::memory_order_acq_rel);
     g_engine.droppedTriggers.store(0, std::memory_order_relaxed);
+    g_engine.lastStreamError.store(0, std::memory_order_release);
+    g_engine.lastXRunCount.store(0, std::memory_order_relaxed);
+    g_engine.nextVoiceSequence = 0;
 
     // ---- Open the Oboe stream (low latency) ----
     oboe::AudioStreamBuilder builder;
@@ -277,11 +301,16 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
            ->setSharingMode(oboe::SharingMode::Exclusive)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
+           ->setUsage(oboe::Usage::Game)
+           ->setContentType(oboe::ContentType::Music)
            ->setDataCallback(&g_callback)
            ->setErrorCallback(&g_callback);
 
-    auto result = builder.openStream(g_engine.stream);
+    std::shared_ptr<oboe::AudioStream> stream;
+    auto result = builder.openStream(stream);
     if (result != oboe::Result::OK) {
+        g_engine.lastStreamError.store(
+                static_cast<int32_t>(result), std::memory_order_release);
         LOGI("Exclusive float stream failed (%s); retrying shared/mono I16",
              oboe::convertToText(result));
         oboe::AudioStreamBuilder b2;
@@ -290,26 +319,48 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
           ->setSharingMode(oboe::SharingMode::Shared)
           ->setFormat(oboe::AudioFormat::I16)
           ->setChannelCount(oboe::ChannelCount::Mono)
+          ->setUsage(oboe::Usage::Game)
+          ->setContentType(oboe::ContentType::Music)
           ->setDataCallback(&g_callback)
           ->setErrorCallback(&g_callback);
-        result = b2.openStream(g_engine.stream);
+        result = b2.openStream(stream);
         if (result != oboe::Result::OK) {
+            g_engine.lastStreamError.store(
+                    static_cast<int32_t>(result), std::memory_order_release);
             LOGE("Could not open stream: %s", oboe::convertToText(result));
             return JNI_FALSE;
         }
         g_engine.format = oboe::AudioFormat::I16;
     }
 
-    g_engine.format       = g_engine.stream->getFormat();
-    g_engine.channelCount = g_engine.stream->getChannelCount();
+    g_engine.format       = stream->getFormat();
+    g_engine.channelCount = stream->getChannelCount();
 
-    result = g_engine.stream->start();
+    const int32_t framesPerBurst = stream->getFramesPerBurst();
+    if (framesPerBurst > 0) {
+        const auto bufferResult = stream->setBufferSizeInFrames(framesPerBurst * 2);
+        if (!bufferResult) {
+            LOGI("Could not tune buffer size: %s", oboe::convertToText(bufferResult.error()));
+        }
+    }
+
+    result = stream->start();
     if (result != oboe::Result::OK) {
+        g_engine.lastStreamError.store(
+                static_cast<int32_t>(result), std::memory_order_release);
         LOGE("start failed: %s", oboe::convertToText(result));
+        stream->close();
         return JNI_FALSE;
     }
 
-    const auto latency = g_engine.stream->calculateLatencyMillis();
+    {
+        std::lock_guard<std::mutex> lock(g_streamMutex);
+        g_engine.stream = stream;
+    }
+    g_engine.lastStreamError.store(0, std::memory_order_release);
+    g_engine.acceptingTriggers.store(true, std::memory_order_release);
+
+    const auto latency = stream->calculateLatencyMillis();
     if (latency) {
         LOGI("DrumEngine started: %d ch, %s, est latency %.1f ms",
              g_engine.channelCount,
@@ -328,7 +379,9 @@ JNIEXPORT void JNICALL
 Java_com_electrodig_voidmusic_audio_DrumEngine_nativeTrigger(
         JNIEnv* /*env*/, jobject /*thiz*/, jint padOrdinal, jfloat velocity) {
     if (padOrdinal < 0 || padOrdinal >= kPadCount) return;
-    if (!g_engine.triggers.enqueue({padOrdinal, velocity})) {
+    if (!g_engine.acceptingTriggers.load(std::memory_order_acquire)) return;
+    const auto epoch = g_engine.triggerEpoch.load(std::memory_order_relaxed);
+    if (!g_engine.triggers.enqueue({padOrdinal, velocity, epoch})) {
         g_engine.droppedTriggers.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -337,6 +390,27 @@ JNIEXPORT jlong JNICALL
 Java_com_electrodig_voidmusic_audio_DrumEngine_nativeDroppedTriggerCount(
         JNIEnv* /*env*/, jobject /*thiz*/) {
     return static_cast<jlong>(g_engine.droppedTriggers.load(std::memory_order_relaxed));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStreamError(
+        JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(
+            g_engine.lastStreamError.load(std::memory_order_acquire));
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_electrodig_voidmusic_audio_DrumEngine_nativeXRunCount(
+        JNIEnv* /*env*/, jobject /*thiz*/) {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    if (g_engine.stream) {
+        const auto result = g_engine.stream->getXRunCount();
+        if (result) {
+            g_engine.lastXRunCount.store(result.value(), std::memory_order_relaxed);
+        }
+    }
+    return static_cast<jlong>(
+            g_engine.lastXRunCount.load(std::memory_order_relaxed));
 }
 
 JNIEXPORT void JNICALL
@@ -348,12 +422,17 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeSetVolume(
 JNIEXPORT void JNICALL
 Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStop(
         JNIEnv* /*env*/, jobject /*thiz*/) {
-    if (g_engine.stream) {
-        g_engine.stream->stop();
-        g_engine.stream->close();
-        g_engine.stream.reset();
+    g_engine.acceptingTriggers.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_streamMutex);
+        if (g_engine.stream) {
+            g_engine.stream->stop();
+            g_engine.stream->close();
+            g_engine.stream.reset();
+        }
     }
     for (auto& v : g_engine.voices) v.active = false;
+    g_engine.lastStreamError.store(0, std::memory_order_release);
     LOGI("DrumEngine stopped");
 }
 

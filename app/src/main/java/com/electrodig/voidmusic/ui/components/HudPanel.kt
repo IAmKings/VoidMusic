@@ -49,7 +49,8 @@ fun HudPanel(
     fps: Float = -1f,
     metrics: VisionMetrics = VisionMetrics(),
     audioBackendLabel: String = "",
-    droppedTriggerCount: Long = 0L
+    droppedTriggerCount: Long = 0L,
+    audioXRunCount: Long = 0L
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
         // Semi-transparent scrim so HUD text stays readable over the camera feed.
@@ -88,6 +89,7 @@ fun HudPanel(
                 if (audioBackendLabel.isNotEmpty()) {
                     item { StatChip("音频", audioBackendLabel) }
                     item { StatChip("丢音", droppedTriggerCount.toString()) }
+                    item { StatChip("欠载", audioXRunCount.toString()) }
                 }
                 PercentileChip("采集→手部", metrics.captureToHandCallbackP50Ms, metrics.captureToHandCallbackP95Ms)
                 PercentileChip("回调→消费", metrics.handCallbackToConsumeP50Ms, metrics.handCallbackToConsumeP95Ms)

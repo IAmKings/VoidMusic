@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.electrodig.voidmusic.detection.grid.GridProjection
 import com.electrodig.voidmusic.detection.grid.GridScanner
 
 /**
@@ -29,7 +30,6 @@ import com.electrodig.voidmusic.detection.grid.GridScanner
  */
 @Composable
 fun CalibrationOverlay(
-    gridScanner: GridScanner,
     onConfirm: (corners: List<GridScanner.GridPoint>) -> Unit,
     initialCorners: List<GridScanner.GridPoint>? = null,
     modifier: Modifier = Modifier
@@ -49,6 +49,9 @@ fun CalibrationOverlay(
     val density = LocalDensity.current
     val handleRadiusPx = with(density) { 14.dp.toPx() }
     var draggedIndex by remember { mutableStateOf<Int?>(null) }
+    val projection = remember(corners) {
+        GridProjection.createOrNull(corners, rows = 4, steps = 16)
+    }
 
     Canvas(
         modifier = modifier
@@ -77,8 +80,8 @@ fun CalibrationOverlay(
                         }
                     },
                     onDragEnd = {
-                        gridScanner.setCalibration(corners)
-                        onConfirm(corners)
+                        GridProjection.createOrNull(corners, rows = 4, steps = 16)
+                            ?.let { onConfirm(it.corners) }
                     }
                 )
             }
@@ -95,9 +98,8 @@ fun CalibrationOverlay(
         }
         drawPath(frame, color = Color.White.copy(alpha = 0.5f), style = Stroke(width = 4f))
 
-        // Grid preview through the scanner's perspective.
-        gridScanner.setCalibration(corners)
-        val cells = gridScanner.cellCenters()
+        // Projection changes during composition, never from the draw pass.
+        val cells = projection?.cellCenters.orEmpty()
         val cellWPx = w / 16 * 0.8f
         val cellHPx = h / 4 * 0.8f
         cells.forEachIndexed { r, row ->

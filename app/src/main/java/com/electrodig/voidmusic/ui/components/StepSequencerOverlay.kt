@@ -7,6 +7,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import com.electrodig.voidmusic.detection.grid.GridProjection
 import com.electrodig.voidmusic.detection.grid.GridScanner
 import com.electrodig.voidmusic.detection.grid.SequenceState
 import com.electrodig.voidmusic.ui.theme.color
@@ -14,20 +15,19 @@ import com.electrodig.voidmusic.ui.theme.color
 /**
  * Renders the 4×16 step grid over the calibrated paper region (PRD F3.2 / F3.6).
  *
- * Cells come from [gridScanner.cellCenters] (perspective-mapped). Each lit cell
+ * Cells come from an immutable perspective projection. Each lit cell
  * is filled with its row's drum-voice colour; the current play-head column gets
  * a bright scan bar so the loop position is obvious. The latest fingertip is
  * drawn so the user can see which cell they are about to toggle.
  */
 @Composable
 fun StepSequencerOverlay(
-    gridScanner: GridScanner,
+    projection: GridProjection?,
     sequence: SequenceState,
     fingertip: GridScanner.GridPoint?,
     modifier: Modifier = Modifier
 ) {
-    if (!gridScanner.isCalibrated()) return
-    val cells = gridScanner.cellCenters()
+    val cells = projection?.cellCenters ?: return
 
     Canvas(modifier = modifier) {
         val w = size.width

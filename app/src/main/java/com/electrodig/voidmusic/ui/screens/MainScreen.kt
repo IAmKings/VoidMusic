@@ -35,7 +35,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,10 +46,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.electrodig.voidmusic.audio.DrumEngine
 import com.electrodig.voidmusic.audio.AudioBackend
+import com.electrodig.voidmusic.audio.AudioRuntimePhase
 import com.electrodig.voidmusic.audio.BuiltInKits
 import com.electrodig.voidmusic.audio.Transport
 import com.electrodig.voidmusic.camera.CameraModule
@@ -111,9 +114,12 @@ fun MainScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val camPermission = rememberPermissionState(Manifest.permission.CAMERA)
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
+    val granted = camPermission.status.isGranted
+    val performanceActive = granted && lifecycleState.isAtLeast(Lifecycle.State.STARTED)
 
-    val settings by viewModel.settings.collectAsState()
-    val settingsLoaded by viewModel.settingsLoaded.collectAsState()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
     val perfConfig = PerformanceConfig.forLevel(settings.performanceLevel)
     val analysisEvents = remember {
         MutableSharedFlow<AnalysisEvent>(
@@ -190,15 +196,15 @@ fun MainScreen(
             cooldownMs = settings.hitCooldownMs
         )
     }
-    val hitArbiter = remember { HitArbiter() }
     val view = LocalView.current
 
-    val hands by handTracker.hands.collectAsState()
-    val session by viewModel.uiState.collectAsState()
-    val zones by viewModel.zones.collectAsState()
-    val flashedZoneIds by viewModel.flashedZoneIds.collectAsState()
+    val hands by handTracker.hands.collectAsStateWithLifecycle()
+    val session by viewModel.uiState.collectAsStateWithLifecycle()
+    val zones by viewModel.zones.collectAsStateWithLifecycle()
+    val flashedZoneIds by viewModel.flashedZoneIds.collectAsStateWithLifecycle()
     val detectionConfig = settings.detectionConfig
-    val sequence by transport.state.collectAsState()
+    val sequence by transport.state.collectAsStateWithLifecycle()
+    val audioStatus by drumEngine.status.collectAsStateWithLifecycle()
 
     var activePresetIndex by remember { mutableIntStateOf(0) }
     var calibrating by remember { mutableStateOf(false) }
@@ -246,13 +252,24 @@ fun MainScreen(
         }
     }
 
-    // Initialise OpenCV + the landmarker + the audio engine once.
-    LaunchedEffect(Unit) {
-        OpenCvLoader.ensureInitialised(context)
-        handTracker.setup()
-        drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
-        drumEngine.start()
-        drumEngine.setMasterVolume(settings.masterVolume)
+    // Heavy realtime resources follow permission + foreground state. The same
+    // instances can be resumed, while final disposal remains handled below.
+    DisposableEffect(performanceActive, handTracker, segmenter, drumEngine) {
+        if (performanceActive) {
+            OpenCvLoader.ensureInitialised(context)
+            handTracker.setup()
+            drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
+            drumEngine.start()
+            drumEngine.setMasterVolume(settings.masterVolume)
+        }
+        onDispose {
+            if (performanceActive) {
+                transport.stop()
+                handTracker.close()
+                segmenter.close()
+                drumEngine.stop()
+            }
+        }
     }
     // Restore only after DataStore emits. Otherwise stateIn's temporary defaults
     // could overwrite a real saved session during cold start.
@@ -353,9 +370,8 @@ fun MainScreen(
                             tapSnapshotRef.set(HitSnapshot(trackedZones, ts))
                             analysisEvents.tryEmit(AnalysisEvent.Zones(trackedZones.map(mapper::map)))
                         }
-                        val zs = cachedZones.get().map(mapper::map)
                         val cacheTimestampMs = cachedZonesTimestampMs.get()
-                        if (zs.isNotEmpty() && cacheTimestampMs != Long.MIN_VALUE) {
+                        if (cachedZones.get().isNotEmpty() && cacheTimestampMs != Long.MIN_VALUE) {
                             visionMetricsRecorder.recordZoneCacheAge(ts - cacheTimestampMs)
                                 ?.let { metrics -> analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics)) }
                         }
@@ -370,43 +386,23 @@ fun MainScreen(
                                 )?.map(hand) ?: hand
                             }
                             val candidates = hitDetector.update(latestHands, rawFrame.timestampMs)
-                            if (modeHolder.get() == StudioMode.STEP) {
-                                // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
-                                if (gridScanner.isCalibrated()) {
-                                    for (candidate in candidates) {
-                                        val cell = gridScanner.locateCell(
-                                            GridScanner.GridPoint(candidate.point.x, candidate.point.y)
-                                        )
-                                        if (cell != null) {
-                                            val key = cell.row.toLong() * 100 + cell.step
-                                            val last = lastCellToggleMs[key] ?: 0L
-                                            if (candidate.timestampMs - last >= STEP_TOGGLE_COOLDOWN_MS) {
-                                                transport.toggleStep(cell.row, cell.step)
-                                                lastCellToggleMs[key] = candidate.timestampMs
-                                                analysisEvents.tryEmit(
-                                                    AnalysisEvent.StepToggle(hapticHolder.get())
-                                                )
-                                            }
+                            // Step mode: a downward tap toggles the cell under the fingertip (F3.3).
+                            if (gridScanner.isCalibrated()) {
+                                for (candidate in candidates) {
+                                    val cell = gridScanner.locateCell(
+                                        GridScanner.GridPoint(candidate.point.x, candidate.point.y)
+                                    )
+                                    if (cell != null) {
+                                        val key = cell.row.toLong() * 100 + cell.step
+                                        val last = lastCellToggleMs[key] ?: 0L
+                                        if (candidate.timestampMs - last >= STEP_TOGGLE_COOLDOWN_MS) {
+                                            transport.toggleStep(cell.row, cell.step)
+                                            lastCellToggleMs[key] = candidate.timestampMs
+                                            analysisEvents.tryEmit(
+                                                AnalysisEvent.StepToggle(hapticHolder.get())
+                                            )
                                         }
                                     }
-                                }
-                            } else {
-                                // Tap mode: hits resolve to drum zones and fire the engine (M3).
-                                val triggers = hitArbiter.arbitrate(candidates, zs)
-                                if (triggers.isNotEmpty()) {
-                                    val candidateResolvedAtMs = SystemClock.elapsedRealtime()
-                                    for (t in triggers) drumEngine.trigger(t.pad, t.velocity)
-                                    visionMetricsRecorder.recordHitToAudioSubmit(
-                                        SystemClock.elapsedRealtime() - candidateResolvedAtMs
-                                    )?.let { metrics ->
-                                        analysisEvents.tryEmit(AnalysisEvent.Metrics(metrics))
-                                    }
-                                    analysisEvents.tryEmit(
-                                        AnalysisEvent.Hit(
-                                            zoneIds = triggers.map { it.zoneId },
-                                            haptic = hapticHolder.get()
-                                        )
-                                    )
                                 }
                             }
                         }
@@ -426,7 +422,6 @@ fun MainScreen(
         if (!camPermission.status.isGranted) camPermission.launchPermissionRequest()
     }
 
-    val granted = camPermission.status.isGranted
     val permanentlyDenied = !granted && !camPermission.status.shouldShowRationale
 
     // PreviewView reported once by CameraPreview's AndroidView factory; binding
@@ -450,17 +445,22 @@ fun MainScreen(
     // this, the stale instance keeps the Preview surface while the new tracker
     // — whose StateFlow the UI actually collects — never receives frames.
     DisposableEffect(camera) {
-        onDispose { camera.stop() }
+        onDispose { camera.close() }
     }
 
-    // (Re)bind preview + analysis whenever the camera instance, lifecycle, or
-    // PreviewView becomes available. This covers both the first-bind case and
-    // the rebuild-after-settings-settle case that previously left the bound
-    // camera and the collected HandTracker as two different instances.
-    LaunchedEffect(camera, lifecycleOwner, previewView) {
-        val pv = previewView ?: return@LaunchedEffect
-        camera.startPreview(lifecycleOwner, pv)
-        viewModel.setCameraReady(true)
+    // Bind only while permission is granted and the destination is foreground.
+    // Disposal invalidates pending CameraProvider callbacks before unbinding.
+    DisposableEffect(performanceActive, camera, lifecycleOwner, previewView) {
+        val pv = previewView
+        if (performanceActive && pv != null) {
+            camera.startPreview(lifecycleOwner, pv, viewModel::setCameraReady)
+        } else {
+            viewModel.setCameraReady(false)
+        }
+        onDispose {
+            camera.stopPreview()
+            viewModel.setCameraReady(false)
+        }
     }
 
     // Keep the camera use cases' targetRotation in sync with the display so
@@ -468,7 +468,7 @@ fun MainScreen(
     // correct bitmap rotation in FrameRouter after device rotation, since the
     // manifest uses configChanges to self-handle orientation without recreating
     // the Activity / rebinding the camera).
-    DisposableEffect(Unit) {
+    DisposableEffect(camera, previewView) {
         val ctx = context
         val displayManager = ctx.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val listener = object : DisplayManager.DisplayListener {
@@ -541,7 +541,7 @@ fun MainScreen(
                     val tip = mappedHands.firstOrNull()?.fingertip
                     val fingertip = if (tip != null) GridScanner.GridPoint(tip.x, tip.y) else null
                     StepSequencerOverlay(
-                        gridScanner = gridScanner,
+                        projection = gridScanner.projection(),
                         sequence = sequence,
                         fingertip = fingertip,
                         modifier = Modifier.fillMaxSize()
@@ -572,12 +572,19 @@ fun MainScreen(
                 onModeSelected = viewModel::setMode,
                 fps = session.analysisFps,
                 metrics = visionMetrics,
-                audioBackendLabel = when (drumEngine.backend) {
-                    AudioBackend.NATIVE_OBOE -> "Oboe"
-                    AudioBackend.SOUND_POOL -> "SoundPool"
-                    AudioBackend.NONE -> ""
+                audioBackendLabel = when (audioStatus.phase) {
+                    AudioRuntimePhase.RECOVERING -> "恢复中"
+                    AudioRuntimePhase.FAILED -> "不可用"
+                    AudioRuntimePhase.STARTING -> "启动中"
+                    AudioRuntimePhase.STOPPED -> ""
+                    AudioRuntimePhase.RUNNING -> when (audioStatus.backend) {
+                        AudioBackend.NATIVE_OBOE -> "Oboe"
+                        AudioBackend.SOUND_POOL -> "SoundPool"
+                        AudioBackend.NONE -> ""
+                    }
                 },
-                droppedTriggerCount = drumEngine.droppedTriggerCount(),
+                droppedTriggerCount = audioStatus.droppedTriggerCount,
+                audioXRunCount = audioStatus.xRunCount,
                 modifier = Modifier
                     .statusBarsPadding()
                     .align(Alignment.TopCenter)
@@ -586,9 +593,12 @@ fun MainScreen(
             // Calibration overlay (F1.4) replaces the live overlays while active.
             if (calibrating) {
                 CalibrationOverlay(
-                    gridScanner = gridScanner,
                     initialCorners = gridScanner.calibration(),
-                    onConfirm = viewModel::setCalibration,
+                    onConfirm = { corners ->
+                        if (gridScanner.setCalibration(corners)) {
+                            viewModel.setCalibration(corners)
+                        }
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
