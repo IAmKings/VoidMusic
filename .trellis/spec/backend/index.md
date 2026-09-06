@@ -15,6 +15,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
+| [Audio Import](./audio-import.md) | Strict WAV parsing, normalization, hashing, and staging contracts | Active |
 | [Database Guidelines](./database-guidelines.md) | Room schema, internal audio storage, and migration contracts | Active |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
