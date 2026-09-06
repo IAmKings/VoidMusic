@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.util.UUID
 
@@ -33,6 +34,9 @@ class AudioAssetStore internal constructor(private val root: File) {
      */
     fun commit(stagingFile: File, storageKey: String): File {
         ensureManagedStagingFile(stagingFile)
+        require(Files.isRegularFile(stagingFile.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            "Staging asset is not a regular file"
+        }
         val target = resolveAsset(storageKey)
         require(!target.exists()) { "Audio asset already exists" }
         try {
@@ -51,6 +55,38 @@ class AudioAssetStore internal constructor(private val root: File) {
     fun discardStaging(stagingFile: File): Boolean {
         ensureManagedStagingFile(stagingFile)
         return !stagingFile.exists() || stagingFile.delete()
+    }
+
+    fun assetExists(storageKey: String): Boolean = resolveAsset(storageKey).isFile
+
+    /** Deletes one managed final asset; an already absent asset is successful. */
+    fun deleteAsset(storageKey: String): Boolean {
+        val asset = resolveAsset(storageKey)
+        return !asset.exists() || asset.delete()
+    }
+
+    /** Lists only valid storage keys directly owned by the final asset directory. */
+    fun assetStorageKeys(): Set<String> {
+        ensureDirectories()
+        return assetDirectory.listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter(File::isFile)
+            .map(File::getName)
+            .filter(STORAGE_KEY::matches)
+            .toSet()
+    }
+
+    /** Best-effort cleanup for inactive staging files, never nested or external paths. */
+    fun cleanupStagingOlderThan(cutoffTimeMs: Long): CleanupReport {
+        ensureDirectories()
+        var deleted = 0
+        var failed = 0
+        stagingDirectory.listFiles().orEmpty().forEach { candidate ->
+            if (!candidate.isFile || candidate.lastModified() > cutoffTimeMs) return@forEach
+            if (candidate.delete()) deleted += 1 else failed += 1
+        }
+        return CleanupReport(deleted = deleted, failed = failed)
     }
 
     private fun ensureManagedStagingFile(file: File) {
@@ -75,3 +111,5 @@ class AudioAssetStore internal constructor(private val root: File) {
         private val STORAGE_KEY = Regex("[a-f0-9]{64}\\.wav")
     }
 }
+
+data class CleanupReport(val deleted: Int, val failed: Int)

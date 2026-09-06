@@ -4,6 +4,7 @@ import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -50,8 +51,19 @@ class LibraryDaoTest {
     @Test
     fun roomLibraryMergesBuiltInsBeforeCustomKits() = runBlocking {
         dao.insertKit(kit("kit-a"))
+        val root = File(
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
+            "room-library-catalogue"
+        )
+        val store = AudioAssetStore(root)
+        val library = RoomKitLibrary(
+            database = db,
+            assetStore = store,
+            audioImporter = AudioImporter(store),
+            builtInSampleSource = BuiltInSampleSource { error("Not used by catalogue") }
+        )
 
-        val catalogue = RoomKitLibrary(dao).kits.first()
+        val catalogue = library.kits.first()
 
         assertEquals(listOf("default", "electro", "kit-a"), catalogue.map { it.id })
         assertEquals(listOf(true, true, false), catalogue.map { it.isBuiltIn })

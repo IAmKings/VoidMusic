@@ -3,7 +3,7 @@ package com.electrodig.voidmusic.audio
 import kotlin.math.roundToInt
 
 /** Stable validation categories that UI-facing import errors can map to localized text. */
-internal enum class WavValidationCode {
+enum class WavValidationCode {
     TOO_SHORT,
     NOT_RIFF,
     NOT_WAVE,

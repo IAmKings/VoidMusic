@@ -13,6 +13,7 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 /** A user-created kit. Built-in kits remain code-owned and are not seeded here. */
@@ -102,8 +103,17 @@ interface KitDao {
     @Query("SELECT * FROM audio_assets WHERE sha256 = :sha256")
     suspend fun assetBySha256(sha256: String): AudioAssetEntity?
 
+    @Query("SELECT * FROM audio_assets ORDER BY id ASC")
+    suspend fun allAssets(): List<AudioAssetEntity>
+
+    @Query("SELECT * FROM audio_assets WHERE status = :status ORDER BY id ASC")
+    suspend fun assetsByStatus(status: String): List<AudioAssetEntity>
+
     @Query("SELECT * FROM kit_pad_mappings WHERE kitId = :kitId ORDER BY pad ASC")
     suspend fun mappingsForKit(kitId: String): List<KitPadMappingEntity>
+
+    @Query("SELECT * FROM kit_pad_mappings WHERE kitId = :kitId AND pad = :pad")
+    suspend fun mappingForPad(kitId: String, pad: String): KitPadMappingEntity?
 
     @Query("SELECT COUNT(*) FROM kit_pad_mappings WHERE audioAssetId = :assetId")
     suspend fun assetReferenceCount(assetId: String): Int
@@ -117,21 +127,84 @@ interface KitDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMappings(mappings: List<KitPadMappingEntity>)
 
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateAsset(asset: AudioAssetEntity)
+
+    @Query("UPDATE library_kits SET name = :name, updatedAtMs = :updatedAtMs WHERE id = :kitId")
+    suspend fun updateKitName(kitId: String, name: String, updatedAtMs: Long): Int
+
+    @Query("UPDATE audio_assets SET status = :status, updatedAtMs = :updatedAtMs WHERE id = :assetId")
+    suspend fun updateAssetStatus(assetId: String, status: String, updatedAtMs: Long): Int
+
+    @Query(
+        "UPDATE kit_pad_mappings SET audioAssetId = :assetId " +
+            "WHERE kitId = :kitId AND pad = :pad"
+    )
+    suspend fun updateMappingAsset(kitId: String, pad: String, assetId: String): Int
+
+    @Query("SELECT MAX(displayOrder) FROM library_kits")
+    suspend fun maximumDisplayOrder(): Int?
+
     @Query("DELETE FROM library_kits WHERE id = :kitId")
-    suspend fun deleteKitById(kitId: String)
+    suspend fun deleteKitById(kitId: String): Int
 
     @Query("DELETE FROM audio_assets WHERE id = :assetId")
-    suspend fun deleteAssetById(assetId: String)
+    suspend fun deleteAssetById(assetId: String): Int
 
     @Transaction
     suspend fun insertCompleteKit(
         kit: LibraryKitEntity,
         assets: List<AudioAssetEntity>,
-        mappings: List<KitPadMappingEntity>
+        mappings: List<KitPadMappingEntity>,
+        updatedAssets: List<AudioAssetEntity> = emptyList()
     ) {
         insertKit(kit)
         assets.forEach { insertAsset(it) }
+        updatedAssets.forEach { updateAsset(it) }
         insertMappings(mappings)
+    }
+
+    /** Replaces one complete kit mapping and marks its newly orphaned old asset. */
+    @Transaction
+    suspend fun replacePadAsset(
+        kitId: String,
+        pad: String,
+        newAssetId: String,
+        insertedAsset: AudioAssetEntity?,
+        updatedAsset: AudioAssetEntity?,
+        updatedAtMs: Long
+    ): AudioAssetEntity? {
+        insertedAsset?.let { insertAsset(it) }
+        updatedAsset?.let { updateAsset(it) }
+        val oldMapping = requireNotNull(mappingForPad(kitId, pad))
+        if (oldMapping.audioAssetId == newAssetId) return null
+        check(updateMappingAsset(kitId, pad, newAssetId) == 1)
+        val oldAsset = assetById(oldMapping.audioAssetId) ?: return null
+        return if (assetReferenceCount(oldAsset.id) == 0) {
+            updateAssetStatus(oldAsset.id, AudioAssetStatuses.PENDING_DELETE, updatedAtMs)
+            oldAsset.copy(status = AudioAssetStatuses.PENDING_DELETE, updatedAtMs = updatedAtMs)
+        } else {
+            null
+        }
+    }
+
+    /** Deletes a kit and marks only assets no longer referenced by another kit. */
+    @Transaction
+    suspend fun deleteKitAndMarkOrphans(kitId: String, updatedAtMs: Long): List<AudioAssetEntity> {
+        val assetIds = mappingsForKit(kitId).map(KitPadMappingEntity::audioAssetId).distinct()
+        check(deleteKitById(kitId) == 1)
+        return assetIds.mapNotNull { assetId ->
+            val asset = assetById(assetId) ?: return@mapNotNull null
+            if (assetReferenceCount(assetId) != 0) return@mapNotNull null
+            updateAssetStatus(assetId, AudioAssetStatuses.PENDING_DELETE, updatedAtMs)
+            asset.copy(status = AudioAssetStatuses.PENDING_DELETE, updatedAtMs = updatedAtMs)
+        }
+    }
+
+    @Transaction
+    suspend fun deleteAssetIfUnreferenced(assetId: String): Boolean {
+        if (assetReferenceCount(assetId) != 0) return false
+        return deleteAssetById(assetId) == 1
     }
 }
 

@@ -22,6 +22,12 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
   - deleting a referenced asset is restricted.
 - File boundary: `AudioAssetStore` resolves only `<64 lowercase hex>.wav` storage keys under `filesDir/audio-assets` and stages imports under `filesDir/audio-import-staging`.
 - Settings selection: persisted runtime selection uses `activeKitId`; `activeKitIndex` is legacy migration input only.
+- Business boundary:
+  - `copyKit(sourceId, name): LibraryResult<String>`
+  - `replacePad(kitId, pad, originalName, openInput): LibraryResult<ReplacePadReport>`
+  - `renameKit(kitId, name): LibraryResult<Unit>`
+  - `deleteKit(kitId): LibraryResult<DeleteKitReport>`
+  - `reconcile(): LibraryResult<ReconcileReport>`
 
 ### 3. Contracts
 
@@ -30,6 +36,12 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
 - Built-in kit summaries are merged with Room custom-kit summaries through `KitLibrary`; UI code must not query the DAO or resolve files directly.
 - Export every Room schema to `app/schemas/` and commit it with the schema change.
 - A complete kit insert is transactional: kit row, asset rows, and pad mappings either all commit or all roll back.
+- `RoomKitLibrary` serializes mutations and runs them on its injected I/O dispatcher. Callers never perform DAO or final-file operations themselves.
+- Built-in samples enter Room only when a user copies a built-in kit. The copy must create all five mappings or create nothing.
+- `replacePad` promotes a normalized file before its Room transaction. A failed transaction deletes that newly promoted file; an undeletable file is reported with `recoveryRequired=true` and becomes a `reconcile()` orphan.
+- Normalized SHA-256 is the deduplication identity. A matching usable asset is reused without creating a second row or file.
+- Deletion first removes mappings and marks newly unreferenced rows `PENDING_DELETE` in one transaction. File deletion and final row deletion happen afterward and are retryable.
+- `reconcile()` is lightweight: clean staging older than 24 hours, retry unreferenced rows, mark missing READY files BROKEN, and remove valid-key files with no database row. It must not hash, decode, or transcode.
 
 ### 4. Validation & Error Matrix
 
@@ -42,18 +54,28 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
 | Mapping references a missing kit or asset | Foreign-key failure and transaction rollback |
 | Asset is still referenced | Delete fails because of `RESTRICT` |
 | Legacy or invalid kit index | Migrate to stable built-in ID; unknown values fall back to `default` |
+| Blank, control-character, or over-40-character kit name | `LibraryErrorCode.INVALID_NAME` |
+| Mutation targets a built-in kit | `BUILT_IN_IMMUTABLE` |
+| Source kit lacks any stable pad mapping | `INCOMPLETE_KIT`; destination is not created |
+| Imported WAV preparation fails | `IMPORT_FAILED` plus import/WAV code; original mapping is unchanged |
+| Final atomic move fails | `STORAGE_FAILURE`; original mapping is unchanged and staging is cleaned when possible |
+| Room transaction fails after file promotion | `DATABASE_FAILURE`; compensate the promoted file and set `recoveryRequired` if it remains |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: normalize into a managed staging file, validate it, atomically promote it using a SHA-256-derived storage key, then commit metadata and mappings through a transaction with explicit compensation on later-stage failure.
 - Base: list built-in kits plus zero or more custom Room kits without writing built-ins to the database.
 - Bad: persist `content://...`, `/data/...`, a raw WAV BLOB, or an array position as the durable identity of a kit or audio asset.
+- Good deletion: remove one of two kits sharing an asset and keep the row/file until the last mapping is removed.
+- Bad deletion: count references before deleting the kit in one transaction, then delete the file based on that stale count.
 
 ### 6. Tests Required
 
 - Unit-test storage-key format, traversal rejection, outside-staging rejection, existing-target rejection, atomic promotion, and staging cleanup.
 - Instrument-test schema creation from every committed schema JSON.
 - Instrument-test unique indexes, foreign-key actions, observable catalogue ordering, and full rollback after a failed mapping insert.
+- Instrument-test built-in copy completeness, normalized-content deduplication, custom-copy sharing, successful replacement, invalid-input preservation, database compensation, and final-move failure.
+- Instrument-test deletion after the first and last shared reference, plus reconciliation of stale staging, PENDING_DELETE rows, missing READY files, and orphan final files.
 - Unit-test legacy `activeKitIndex` values `0`, `1`, and an unknown value, plus migration idempotence.
 - For later versions, add a Room migration test from every supported prior schema before increasing the version.
 
@@ -84,6 +106,8 @@ val file = audioAssetStore.resolveAsset(entity.storageKey)
 ```
 
 The correct form keeps filesystem ownership in `AudioAssetStore`, makes database backups portable inside the app sandbox, and prevents stale absolute paths or oversized Room rows.
+
+For cross-resource mutation, never wrap filesystem I/O inside a Room transaction. Promote first, commit Room second, and explicitly delete the promoted file when the transaction fails.
 
 ---
 

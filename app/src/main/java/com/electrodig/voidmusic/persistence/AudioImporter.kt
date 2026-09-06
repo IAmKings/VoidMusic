@@ -1,16 +1,13 @@
-package com.electrodig.voidmusic.audio
+package com.electrodig.voidmusic.persistence
 
-import com.electrodig.voidmusic.persistence.AudioAssetStore
+import com.electrodig.voidmusic.audio.AudioImportErrorCode
+import com.electrodig.voidmusic.audio.WavDecoder
+import com.electrodig.voidmusic.audio.WavValidationCode
+import com.electrodig.voidmusic.audio.WavValidationException
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
-
-internal enum class AudioImportErrorCode {
-    TOO_LARGE,
-    INVALID_WAV,
-    IO_FAILURE
-}
 
 internal class AudioImportException(
     val code: AudioImportErrorCode,
@@ -40,8 +37,8 @@ internal class AudioImporter(
     fun prepare(openInput: () -> InputStream): PreparedAudioImport {
         val sourceStaging = try {
             assetStore.createStagingFile()
-        } catch (io: IOException) {
-            throw AudioImportException(AudioImportErrorCode.IO_FAILURE, cause = io)
+        } catch (failure: Exception) {
+            throw AudioImportException(AudioImportErrorCode.IO_FAILURE, cause = failure)
         }
         var normalizedStaging: File? = null
         var completed = false
@@ -87,15 +84,11 @@ internal class AudioImporter(
             )
         } catch (known: AudioImportException) {
             throw known
-        } catch (io: IOException) {
-            throw AudioImportException(AudioImportErrorCode.IO_FAILURE, cause = io)
-        } catch (denied: SecurityException) {
-            throw AudioImportException(AudioImportErrorCode.IO_FAILURE, cause = denied)
+        } catch (failure: Exception) {
+            throw AudioImportException(AudioImportErrorCode.IO_FAILURE, cause = failure)
         } finally {
-            runCatching { assetStore.discardStaging(sourceStaging) }
-            if (!completed) normalizedStaging?.let { file ->
-                runCatching { assetStore.discardStaging(file) }
-            }
+            discardQuietly(sourceStaging)
+            if (!completed) normalizedStaging?.let(::discardQuietly)
         }
     }
 
@@ -129,6 +122,14 @@ internal class AudioImporter(
             }
         }
         return CopiedInput(byteCount, digest.digest().toHex())
+    }
+
+    private fun discardQuietly(file: File) {
+        try {
+            assetStore.discardStaging(file)
+        } catch (_: Exception) {
+            // A later reconcile pass owns an undeletable staging file.
+        }
     }
 
     private data class CopiedInput(val byteCount: Long, val sha256: String)

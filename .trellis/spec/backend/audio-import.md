@@ -20,7 +20,7 @@ fun WavDecoder.normalizeToMonoPcm16Wav(
 fun AudioImporter.prepare(openInput: () -> InputStream): PreparedAudioImport
 ```
 
-Stable error types are `WavValidationCode`, `AudioImportErrorCode`, `WavValidationException`, and `AudioImportException`.
+Public callers consume stable `WavValidationCode` and `AudioImportErrorCode` values through `LibraryResult`; parser/import exceptions remain implementation details inside the persistence boundary.
 
 ### 3. Contracts
 

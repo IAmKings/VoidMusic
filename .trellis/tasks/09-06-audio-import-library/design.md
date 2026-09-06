@@ -61,7 +61,12 @@ DAO 实体不得跨过 `KitLibrary` 边界。`storageKey` 解析为绝对文件�
 interface KitLibrary {
     val kits: Flow<List<KitSummary>>
     suspend fun copyKit(sourceId: String, name: String): LibraryResult<String>
-    suspend fun replacePad(kitId: String, pad: DrumPad, uri: Uri): ImportResult
+    suspend fun replacePad(
+        kitId: String,
+        pad: DrumPad,
+        originalName: String,
+        openInput: () -> InputStream
+    ): LibraryResult<ReplacePadReport>
     suspend fun renameKit(kitId: String, name: String): LibraryResult<Unit>
     suspend fun prepare(kitId: String): LibraryResult<PreparedKit>
     suspend fun deleteKit(kitId: String): DeleteResult
@@ -69,7 +74,7 @@ interface KitLibrary {
 }
 ```
 
-具体实现拥有 Room、`AssetStore`、解析器、调度器和时钟。Android URI 读取通过小接口注入，使核心导入流程可在 JVM 测试中使用内存/临时文件替身。
+具体实现拥有 Room、`AssetStore`、解析器、调度器和时钟。Android URI 只在 UI/ViewModel 边界转换为一次性 `openInput`，既不持久化 URI，也使核心导入流程可在测试中使用内存/临时文件替身。
 
 ## 导入与提交状态机
 
