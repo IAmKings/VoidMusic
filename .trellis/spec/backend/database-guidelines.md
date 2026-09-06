@@ -26,6 +26,7 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
   - `copyKit(sourceId, name): LibraryResult<String>`
   - `replacePad(kitId, pad, originalName, openInput): LibraryResult<ReplacePadReport>`
   - `renameKit(kitId, name): LibraryResult<Unit>`
+  - `prepare(kitId): LibraryResult<PreparedKit>`
   - `deleteKit(kitId): LibraryResult<DeleteKitReport>`
   - `reconcile(): LibraryResult<ReconcileReport>`
 
@@ -34,6 +35,7 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
 - Room stores metadata and relative `storageKey` values only. It must never store PCM/BLOB data, absolute paths, or document-provider URIs.
 - Normalized audio files are private internal files. Staging and final asset directories must share `filesDir` so promotion can use an atomic move.
 - Built-in kit summaries are merged with Room custom-kit summaries through `KitLibrary`; UI code must not query the DAO or resolve files directly.
+- `prepare` serializes against mutations, validates all mapped assets and decodes them on the injected I/O dispatcher. A missing or invalid READY file is marked BROKEN before failure is returned.
 - Export every Room schema to `app/schemas/` and commit it with the schema change.
 - A complete kit insert is transactional: kit row, asset rows, and pad mappings either all commit or all roll back.
 - `RoomKitLibrary` serializes mutations and runs them on its injected I/O dispatcher. Callers never perform DAO or final-file operations themselves.
@@ -77,6 +79,7 @@ Use this contract whenever code creates, reads, updates, deletes, or migrates cu
 - Instrument-test built-in copy completeness, normalized-content deduplication, custom-copy sharing, successful replacement, invalid-input preservation, database compensation, and final-move failure.
 - Instrument-test deletion after the first and last shared reference, plus reconciliation of stale staging, PENDING_DELETE rows, missing READY files, and orphan final files.
 - Unit-test legacy `activeKitIndex` values `0`, `1`, and an unknown value, plus migration idempotence.
+- Android JUnit4 expression-body tests that end in `assertThrows` must append `Unit` (or use an explicit block returning `Unit`); otherwise Kotlin may generate a non-void test method that the device runner rejects during class initialization.
 - For later versions, add a Room migration test from every supported prior schema before increasing the version.
 
 ### 7. Wrong vs Correct

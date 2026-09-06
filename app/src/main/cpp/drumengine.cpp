@@ -252,7 +252,12 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
-        JNIEnv* env, jobject /*thiz*/, jobject /*assetMgr*/, jobject samplesMap) {
+        JNIEnv* env, jobject /*thiz*/, jobject samplesMap, jint sampleRate) {
+
+    if (sampleRate < 8000 || sampleRate > 96000) {
+        LOGE("Unsupported prepared sample rate: %d", sampleRate);
+        return JNI_FALSE;
+    }
 
     // ---- Read the pad→float[] map from Kotlin ----
     for (auto& sample : g_engine.samples) sample.clear();
@@ -301,6 +306,7 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
            ->setSharingMode(oboe::SharingMode::Exclusive)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
+           ->setSampleRate(sampleRate)
            ->setUsage(oboe::Usage::Game)
            ->setContentType(oboe::ContentType::Music)
            ->setDataCallback(&g_callback)
@@ -319,6 +325,7 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
           ->setSharingMode(oboe::SharingMode::Shared)
           ->setFormat(oboe::AudioFormat::I16)
           ->setChannelCount(oboe::ChannelCount::Mono)
+          ->setSampleRate(sampleRate)
           ->setUsage(oboe::Usage::Game)
           ->setContentType(oboe::ContentType::Music)
           ->setDataCallback(&g_callback)
@@ -362,12 +369,14 @@ Java_com_electrodig_voidmusic_audio_DrumEngine_nativeStart(
 
     const auto latency = stream->calculateLatencyMillis();
     if (latency) {
-        LOGI("DrumEngine started: %d ch, %s, est latency %.1f ms",
+        LOGI("DrumEngine started: %d Hz, %d ch, %s, est latency %.1f ms",
+             stream->getSampleRate(),
              g_engine.channelCount,
              g_engine.format == oboe::AudioFormat::Float ? "Float" : "I16",
              latency.value());
     } else {
-        LOGI("DrumEngine started: %d ch, %s, latency unavailable (%s)",
+        LOGI("DrumEngine started: %d Hz, %d ch, %s, latency unavailable (%s)",
+             stream->getSampleRate(),
              g_engine.channelCount,
              g_engine.format == oboe::AudioFormat::Float ? "Float" : "I16",
              oboe::convertToText(latency.error()));

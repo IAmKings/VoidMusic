@@ -3,6 +3,8 @@ package com.electrodig.voidmusic.session
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.electrodig.voidmusic.audio.LibraryResult
+import com.electrodig.voidmusic.audio.PreparedKit
 import com.electrodig.voidmusic.detection.color.DetectionConfig
 import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.color.HsvPreset
@@ -11,6 +13,7 @@ import com.electrodig.voidmusic.persistence.CalibrationPoint
 import com.electrodig.voidmusic.persistence.CURRENT_KIT_SELECTION_VERSION
 import com.electrodig.voidmusic.persistence.Settings
 import com.electrodig.voidmusic.persistence.SettingsRepository
+import com.electrodig.voidmusic.persistence.RoomKitLibrary
 import com.electrodig.voidmusic.performance.RuntimePerformancePolicy
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -32,6 +35,7 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
     private val performancePolicy = RuntimePerformancePolicy(app)
+    private val kitLibrary = RoomKitLibrary.open(app)
 
     private val _uiState = MutableStateFlow(SessionUiState())
     val uiState: StateFlow<SessionUiState> = _uiState.asStateFlow()
@@ -68,6 +72,7 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, OnboardingState())
 
     init {
+        viewModelScope.launch { kitLibrary.reconcile() }
         viewModelScope.launch {
             settings.collect { saved ->
                 val mode = StudioMode.entries.firstOrNull { it.name == saved.lastMode } ?: StudioMode.TAP
@@ -126,6 +131,9 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
+
+    /** Resolves and decodes a complete kit away from the Compose/main thread. */
+    suspend fun prepareKit(id: String): LibraryResult<PreparedKit> = kitLibrary.prepare(id)
 
     fun setHitVelocityThreshold(value: Float) {
         repoUpdate { it.copy(hitVelocityThreshold = value.coerceIn(0.2f, 2.0f)) }

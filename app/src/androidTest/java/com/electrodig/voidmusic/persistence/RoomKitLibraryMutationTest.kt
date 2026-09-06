@@ -3,8 +3,10 @@ package com.electrodig.voidmusic.persistence
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.electrodig.voidmusic.audio.AudioSampleSource
 import com.electrodig.voidmusic.audio.LibraryErrorCode
 import com.electrodig.voidmusic.audio.LibraryResult
+import com.electrodig.voidmusic.audio.SoundPoolDrumEngine
 import com.electrodig.voidmusic.detection.color.DrumPad
 import java.io.File
 import java.util.ArrayDeque
@@ -14,6 +16,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -253,6 +256,56 @@ class RoomKitLibraryMutationTest {
             library.renameKit(kitId, "x".repeat(41)).failureCode()
         )
         assertEquals("新名称", dao.kitById(kitId)?.name)
+    }
+
+    @Test
+    fun prepareBuiltInAndImportedKitsProducesCompleteNormalizedPcm() = runBlocking {
+        val library = library()
+        val customId = library.copyKit("default", "可播放音色").successValue()
+
+        val builtIn = library.prepare("default").successValue()
+        val cachedBuiltIn = library.prepare("default").successValue()
+        val imported = library.prepare(customId).successValue()
+
+        assertEquals(48_000, builtIn.sampleRate)
+        assertEquals(48_000, imported.sampleRate)
+        assertEquals(DrumPad.entries.toSet(), builtIn.samples.keys)
+        assertEquals(DrumPad.entries.toSet(), imported.samples.keys)
+        assertTrue(builtIn.samples.values.all { it.source is AudioSampleSource.BuiltIn })
+        assertTrue(imported.samples.values.all { it.source is AudioSampleSource.Imported })
+        assertTrue(imported.samples.values.all { it.pcm.isNotEmpty() })
+        assertSame(builtIn, cachedBuiltIn)
+        assertEquals(1, imported.samples.values.toSet().size)
+    }
+
+    @Test
+    fun missingImportedAssetCannotPrepareAndIsMarkedBroken() = runBlocking {
+        val library = library()
+        val customId = library.copyKit("default", "损坏音色").successValue()
+        val mapping = requireNotNull(dao.mappingForPad(customId, DrumPad.KICK.name))
+        val asset = requireNotNull(dao.assetById(mapping.audioAssetId))
+        assertTrue(assetStore.deleteAsset(asset.storageKey))
+
+        val result = library.prepare(customId)
+
+        assertEquals(LibraryErrorCode.SOURCE_UNAVAILABLE, result.failureCode())
+        assertEquals(AudioAssetStatuses.BROKEN, dao.assetById(asset.id)?.status)
+    }
+
+    @Test
+    fun soundPoolLoadsAndTriggersAnImportedPreparedKit() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val library = library()
+        val customId = library.copyKit("default", "SoundPool 音色").successValue()
+        val prepared = library.prepare(customId).successValue()
+        val engine = SoundPoolDrumEngine(context, prepared, loadTimeoutMs = 5_000L)
+
+        try {
+            assertTrue(engine.start())
+            DrumPad.entries.forEach { engine.trigger(it, 1f) }
+        } finally {
+            engine.stop()
+        }
     }
 
     private fun library(

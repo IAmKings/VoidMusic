@@ -26,175 +26,191 @@ data class AudioRuntimeStatus(
 )
 
 /**
- * Low-latency drum playback engine backed by Oboe (AAudio) via JNI (PRD F6 / §9.5).
- *
- * Oboe is the primary path and SoundPool is the emergency fallback. A lightweight
- * control-thread monitor detects native stream disconnects, rebuilds Oboe outside
- * the real-time callback and falls back to SoundPool if reopening fails. Native
- * audio callbacks remain lock-free and allocation-free.
+ * Low-latency playback owner. It accepts only fully prepared PCM and restores the
+ * previous prepared kit whenever a backend cannot start the requested replacement.
  */
-class DrumEngine(context: Context) {
+class DrumEngine private constructor(
+    private val context: Context?,
+    starter: AudioBackendStarter?,
+    private val elapsedRealtimeMs: () -> Long
+) {
+    constructor(context: Context) : this(
+        context.applicationContext,
+        null,
+        android.os.SystemClock::elapsedRealtime
+    )
 
-    private val context = context.applicationContext
+    internal constructor(starter: AudioBackendStarter) : this(null, starter, { 0L })
 
+    private val backendStarter = starter ?: AudioBackendStarter(::startRealBackend)
+    @Volatile private var activeBackend: ActiveAudioBackend? = null
     @Volatile private var ready = false
-    @Volatile private var nativeLoaded = false
     @Volatile private var desiredRunning = false
     @Volatile var backend: AudioBackend = AudioBackend.NONE
         private set
-    private var fallback: SoundPoolDrumEngine? = null
-    private var kit: Kit = BuiltInKits.DEFAULT
+    private var preparedKit: PreparedKit? = null
     @Volatile private var masterVolume = 0.9f
+    private var nativeLoaded = false
     private var monitor: ScheduledExecutorService? = null
-    private var decodedKitId: String? = null
-    private var decodedSamples: Map<Int, FloatArray>? = null
     private var lastNativeErrorCode = 0
+    private val pendingLock = Any()
+    private val pendingTriggers = ArrayDeque<PendingTrigger>()
 
     private val _status = MutableStateFlow(AudioRuntimeStatus())
     val status: StateFlow<AudioRuntimeStatus> = _status.asStateFlow()
 
-    /** Load the active kit and open an audio backend. Idempotent. */
+    /** Open an audio backend for the already prepared kit. Idempotent. */
     @Synchronized
     fun start(): Boolean {
         desiredRunning = true
         if (ready) return true
-        val started = startBackendsLocked(AudioRuntimePhase.STARTING)
-        if (started && backend == AudioBackend.NATIVE_OBOE) ensureMonitorLocked()
-        return started
+        val kit = preparedKit
+        if (kit == null) {
+            publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
+            return false
+        }
+        return startBackendLocked(kit, AudioRuntimePhase.STARTING)
     }
 
-    private fun startBackendsLocked(initialPhase: AudioRuntimePhase): Boolean {
-        publishStatus(initialPhase, AudioBackend.NONE)
-        if (loadNative() && startNative()) {
-            backend = AudioBackend.NATIVE_OBOE
-            ready = true
-            nativeSetVolumeSafely(masterVolume)
-            lastNativeErrorCode = 0
-            publishNativeStatus(AudioRuntimePhase.RUNNING)
+    /** Starts or switches in one recoverable operation, including foreground resume. */
+    @Synchronized
+    fun start(newKit: PreparedKit): Boolean {
+        if (ready) return setPreparedKit(newKit)
+        val previousKit = preparedKit
+        desiredRunning = true
+        preparedKit = newKit
+        if (startBackendLocked(newKit, AudioRuntimePhase.STARTING)) return true
+
+        preparedKit = previousKit
+        if (previousKit != null && previousKit !== newKit &&
+            startBackendLocked(previousKit, AudioRuntimePhase.RECOVERING)
+        ) {
+            logWarning("Kit startup failed; previous kit restored")
+            return false
+        }
+        clearPendingTriggers()
+        publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
+        return false
+    }
+
+    /**
+     * Commits a prepared kit. When startup fails, the previous kit is restarted
+     * before this method returns and queued transition hits are replayed.
+     */
+    @Synchronized
+    fun setPreparedKit(newKit: PreparedKit): Boolean {
+        if (preparedKit === newKit) return true
+        if (!desiredRunning) {
+            preparedKit = newKit
             return true
         }
 
-        // nativeStart can leave partial state after an open/start error.
+        val previousKit = preparedKit
+        stopActiveBackendLocked()
+        preparedKit = newKit
+        if (startBackendLocked(newKit, AudioRuntimePhase.STARTING)) return true
+
+        preparedKit = previousKit
+        if (previousKit != null && startBackendLocked(previousKit, AudioRuntimePhase.RECOVERING)) {
+            logWarning("Kit switch failed; previous kit restored")
+            return false
+        }
+
+        clearPendingTriggers()
+        publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
+        logError("Kit switch and previous-kit recovery both failed")
+        return false
+    }
+
+    private fun startBackendLocked(kit: PreparedKit, initialPhase: AudioRuntimePhase): Boolean {
+        publishStatus(initialPhase, AudioBackend.NONE)
+        val started = try {
+            backendStarter.start(kit)
+        } catch (failure: Exception) {
+            if (context != null) Log.e(TAG, "Audio backend startup failed", failure)
+            null
+        }
+        if (started == null) {
+            activeBackend = null
+            backend = AudioBackend.NONE
+            ready = false
+            publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
+            return false
+        }
+        started.setMasterVolume(masterVolume)
+        activeBackend = started
+        backend = started.kind
+        ready = true
+        if (started.kind == AudioBackend.NATIVE_OBOE) {
+            lastNativeErrorCode = 0
+            ensureMonitorLocked()
+        }
+        publishActiveStatus(AudioRuntimePhase.RUNNING)
+        drainPendingTriggers(started)
+        return true
+    }
+
+    private fun startRealBackend(kit: PreparedKit): ActiveAudioBackend? {
+        if (loadNative() && startNative(kit)) return NativeBackend()
+
         if (nativeLoaded) {
             lastNativeErrorCode = runCatching { nativeStreamError() }
                 .getOrDefault(lastNativeErrorCode)
             stopNativeSafely("Failed to clean up native startup")
         }
 
+        val appContext = requireNotNull(context)
         Log.w(TAG, "Native Oboe unavailable — falling back to SoundPool")
-        val fb = SoundPoolDrumEngine(context, kit)
-        if (fb.start()) {
-            fb.setMasterVolume(masterVolume)
-            fallback = fb
-            backend = AudioBackend.SOUND_POOL
-            ready = true
-            publishStatus(AudioRuntimePhase.RUNNING, backend)
-            return true
-        }
-
-        backend = AudioBackend.NONE
-        ready = false
-        publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
-        Log.e(TAG, "SoundPool fallback also failed — audio disabled")
-        return false
-    }
-
-    private fun startNative(): Boolean {
-        val samples = decodedSamplesForKit() ?: return false
-        return try {
-            nativeStart(context.assets, samples)
-        } catch (t: Throwable) {
-            Log.e(TAG, "nativeStart failed", t)
-            false
-        }
-    }
-
-    private fun decodedSamplesForKit(): Map<Int, FloatArray>? {
-        if (decodedKitId == kit.id) decodedSamples?.let { return it }
-        val loaded = DrumPad.entries.associate { pad ->
-            pad.ordinal to kit.samples[pad]?.let(::loadWav)
-        }
-        if (loaded.any { it.value == null }) {
-            Log.e(TAG, "Active kit is incomplete; native engine will not start")
-            return null
-        }
-        return loaded.mapValues { requireNotNull(it.value) }.also {
-            decodedKitId = kit.id
-            decodedSamples = it
-        }
+        return SoundPoolDrumEngine(appContext, kit).takeIf(SoundPoolDrumEngine::start)
+            ?: run {
+                Log.e(TAG, "SoundPool fallback also failed — audio disabled")
+                null
+            }
     }
 
     /** True when native Oboe is active (not the SoundPool fallback). */
     val isNativeAvailable: Boolean get() = backend == AudioBackend.NATIVE_OBOE
 
-    /** Native queue overflows since the active stream was started; 0 for fallback. */
-    fun droppedTriggerCount(): Long = if (backend == AudioBackend.NATIVE_OBOE) {
-        runCatching { nativeDroppedTriggerCount() }.getOrDefault(0L)
-    } else 0L
+    fun droppedTriggerCount(): Long = activeBackend?.droppedTriggerCount() ?: 0L
 
-    /** Native buffer underruns since the active stream was started; 0 for fallback. */
-    fun xRunCount(): Long = if (backend == AudioBackend.NATIVE_OBOE) {
-        runCatching { nativeXRunCount() }.getOrDefault(0L)
-    } else 0L
+    fun xRunCount(): Long = activeBackend?.xRunCount() ?: 0L
 
-    /** Trigger [pad] immediately at [velocity] (0..1). No-op while rebuilding. */
+    /** Trigger immediately; only the short transition window uses a bounded queue. */
     fun trigger(pad: DrumPad, velocity: Float) {
-        if (!ready) return
-        when (backend) {
-            AudioBackend.SOUND_POOL -> fallback?.trigger(pad, velocity)
-            AudioBackend.NATIVE_OBOE -> try {
-                nativeTrigger(pad.ordinal, velocity.coerceIn(0f, 1f))
-            } catch (t: Throwable) {
-                Log.w(TAG, "nativeTrigger failed", t)
+        val normalizedVelocity = velocity.coerceIn(0f, 1f)
+        val active = activeBackend
+        if (ready && active != null) {
+            active.trigger(pad, normalizedVelocity)
+        } else if (desiredRunning) {
+            synchronized(pendingLock) {
+                if (pendingTriggers.size == MAX_PENDING_TRIGGERS) pendingTriggers.removeFirst()
+                pendingTriggers += PendingTrigger(pad, normalizedVelocity)
             }
-            AudioBackend.NONE -> Unit
         }
     }
 
-    /** Set master gain 0..1. */
     fun setMasterVolume(volume: Float) {
         masterVolume = volume.coerceIn(0f, 1f)
-        if (!ready) return
-        when (backend) {
-            AudioBackend.SOUND_POOL -> fallback?.setMasterVolume(masterVolume)
-            AudioBackend.NATIVE_OBOE -> nativeSetVolumeSafely(masterVolume)
-            AudioBackend.NONE -> Unit
-        }
+        if (ready) activeBackend?.setMasterVolume(masterVolume)
     }
 
-    /** Applies a built-in kit to the active backend. Returns false if reloading fails. */
-    @Synchronized
-    fun setKit(newKit: Kit): Boolean {
-        if (kit.id == newKit.id) return true
-        val restart = desiredRunning
-        stopBackendsLocked()
-        kit = newKit
-        decodedKitId = null
-        decodedSamples = null
-        if (!restart) return true
-        val started = startBackendsLocked(AudioRuntimePhase.STARTING)
-        if (started && backend == AudioBackend.NATIVE_OBOE) ensureMonitorLocked()
-        return started
-    }
-
-    /** Stop and release audio resources (PRD §4.4 background release). */
+    /** Stop and release audio resources when the app leaves the foreground. */
     @Synchronized
     fun stop() {
         desiredRunning = false
         monitor?.shutdownNow()
         monitor = null
-        stopBackendsLocked()
+        stopActiveBackendLocked()
+        clearPendingTriggers()
         lastNativeErrorCode = 0
         publishStatus(AudioRuntimePhase.STOPPED, AudioBackend.NONE)
     }
 
-    private fun stopBackendsLocked() {
-        val activeBackend = backend
+    private fun stopActiveBackendLocked() {
         ready = false
         backend = AudioBackend.NONE
-        if (activeBackend == AudioBackend.SOUND_POOL) fallback?.stop()
-        fallback = null
-        if (activeBackend == AudioBackend.NATIVE_OBOE) stopNativeSafely("nativeStop failed")
+        activeBackend?.stop()
+        activeBackend = null
     }
 
     private fun ensureMonitorLocked() {
@@ -215,56 +231,41 @@ class DrumEngine(context: Context) {
     }
 
     @Synchronized
-    private fun pollNativeHealth() {
-        if (!desiredRunning || !ready || backend != AudioBackend.NATIVE_OBOE) return
-        val error = nativeStreamError()
+    internal fun pollNativeHealth() {
+        val current = activeBackend ?: return
+        if (!desiredRunning || !ready || current.kind != AudioBackend.NATIVE_OBOE) return
+        val error = current.streamError()
         if (error == 0) {
-            publishNativeStatus(AudioRuntimePhase.RUNNING)
+            publishActiveStatus(AudioRuntimePhase.RUNNING)
             return
         }
 
-        val recoveryStartedAt = android.os.SystemClock.elapsedRealtime()
+        val recoveryStartedAt = elapsedRealtimeMs()
         lastNativeErrorCode = error
-        ready = false
-        backend = AudioBackend.NONE
+        stopActiveBackendLocked()
         publishStatus(AudioRuntimePhase.RECOVERING, AudioBackend.NONE)
-        stopNativeSafely("Failed to close disconnected Oboe stream")
-
-        val recovered = desiredRunning && startNative()
-        if (recovered) {
-            backend = AudioBackend.NATIVE_OBOE
-            ready = true
-            nativeSetVolumeSafely(masterVolume)
-            publishNativeStatus(AudioRuntimePhase.RUNNING)
-        } else if (desiredRunning) {
-            stopNativeSafely("Failed to clean up Oboe recovery")
-            val fb = SoundPoolDrumEngine(context, kit)
-            if (fb.start()) {
-                fb.setMasterVolume(masterVolume)
-                fallback = fb
-                backend = AudioBackend.SOUND_POOL
-                ready = true
-                publishStatus(AudioRuntimePhase.RUNNING, backend)
-            } else {
-                backend = AudioBackend.NONE
-                ready = false
-                publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
-            }
+        val kit = preparedKit
+        if (desiredRunning && kit != null) {
+            startBackendLocked(kit, AudioRuntimePhase.RECOVERING)
+        } else {
+            publishStatus(AudioRuntimePhase.FAILED, AudioBackend.NONE)
         }
-
-        Log.i(
-            TAG,
-            "Audio recovery completed in " +
-                "${android.os.SystemClock.elapsedRealtime() - recoveryStartedAt} ms; backend=$backend"
-        )
+        if (context != null) {
+            Log.i(
+                TAG,
+                "Audio recovery completed in " +
+                    "${elapsedRealtimeMs() - recoveryStartedAt} ms; backend=$backend"
+            )
+        }
     }
 
-    private fun publishNativeStatus(phase: AudioRuntimePhase) {
+    private fun publishActiveStatus(phase: AudioRuntimePhase) {
+        val active = activeBackend
         publishStatus(
             phase = phase,
-            activeBackend = AudioBackend.NATIVE_OBOE,
-            dropped = runCatching { nativeDroppedTriggerCount() }.getOrDefault(0L),
-            xruns = runCatching { nativeXRunCount() }.getOrDefault(0L)
+            activeBackend = active?.kind ?: AudioBackend.NONE,
+            dropped = runCatching { active?.droppedTriggerCount() ?: 0L }.getOrDefault(0L),
+            xruns = runCatching { active?.xRunCount() ?: 0L }.getOrDefault(0L)
         )
     }
 
@@ -283,13 +284,23 @@ class DrumEngine(context: Context) {
         )
     }
 
-    private fun stopNativeSafely(message: String) {
-        runCatching { nativeStop() }.onFailure { Log.w(TAG, message, it) }
+    private fun drainPendingTriggers(target: ActiveAudioBackend) {
+        val queued = synchronized(pendingLock) {
+            pendingTriggers.toList().also { pendingTriggers.clear() }
+        }
+        queued.forEach { target.trigger(it.pad, it.velocity) }
     }
 
-    private fun nativeSetVolumeSafely(volume: Float) {
-        runCatching { nativeSetVolume(volume) }
-            .onFailure { Log.w(TAG, "nativeSetVolume failed", it) }
+    private fun clearPendingTriggers() {
+        synchronized(pendingLock) { pendingTriggers.clear() }
+    }
+
+    private fun logWarning(message: String) {
+        if (context != null) Log.w(TAG, message)
+    }
+
+    private fun logError(message: String) {
+        if (context != null) Log.e(TAG, message)
     }
 
     private fun loadNative(): Boolean {
@@ -297,35 +308,57 @@ class DrumEngine(context: Context) {
         nativeLoaded = try {
             System.loadLibrary("drumengine")
             true
-        } catch (t: UnsatisfiedLinkError) {
-            Log.w(TAG, "libdrumengine.so not found", t)
+        } catch (failure: UnsatisfiedLinkError) {
+            Log.w(TAG, "libdrumengine.so not found", failure)
             false
         }
         return nativeLoaded
     }
 
-    /** Decode a res/raw WAV into a mono float [-1,1] array. */
-    private fun loadWav(sample: SampleRef): FloatArray? = runCatching {
-        context.resources.openRawResource(sample.rawResId).use { input ->
-            WavDecoder.toMonoFloats(input.readBytes())
-        }
-    }.getOrElse {
-        Log.e(TAG, "decode kit sample failed", it)
-        null
+    private fun startNative(kit: PreparedKit): Boolean = try {
+        nativeStart(
+            samples = kit.samples.mapKeys { it.key.ordinal }.mapValues { it.value.pcm },
+            sampleRate = kit.sampleRate
+        )
+    } catch (failure: Throwable) {
+        Log.e(TAG, "nativeStart failed", failure)
+        false
     }
+
+    private fun stopNativeSafely(message: String) {
+        runCatching { nativeStop() }.onFailure { Log.w(TAG, message, it) }
+    }
+
+    private inner class NativeBackend : ActiveAudioBackend {
+        override val kind = AudioBackend.NATIVE_OBOE
+
+        override fun trigger(pad: DrumPad, velocity: Float) {
+            runCatching { nativeTrigger(pad.ordinal, velocity) }
+                .onFailure { Log.w(TAG, "nativeTrigger failed", it) }
+        }
+
+        override fun setMasterVolume(volume: Float) {
+            runCatching { nativeSetVolume(volume) }
+                .onFailure { Log.w(TAG, "nativeSetVolume failed", it) }
+        }
+
+        override fun droppedTriggerCount(): Long = nativeDroppedTriggerCount()
+        override fun xRunCount(): Long = nativeXRunCount()
+        override fun streamError(): Int = nativeStreamError()
+        override fun stop() = stopNativeSafely("nativeStop failed")
+    }
+
+    private data class PendingTrigger(val pad: DrumPad, val velocity: Float)
 
     companion object {
         private const val TAG = "DrumEngine"
         private const val HEALTH_POLL_MS = 250L
         private const val RECOVERY_THREAD_NAME = "VM-Audio-Recovery"
+        private const val MAX_PENDING_TRIGGERS = 16
     }
 
     // ---- JNI ----
-    private external fun nativeStart(
-        assetMgr: android.content.res.AssetManager,
-        samples: Map<Int, FloatArray>
-    ): Boolean
-
+    private external fun nativeStart(samples: Map<Int, FloatArray>, sampleRate: Int): Boolean
     private external fun nativeTrigger(padOrdinal: Int, velocity: Float)
     private external fun nativeDroppedTriggerCount(): Long
     private external fun nativeStreamError(): Int

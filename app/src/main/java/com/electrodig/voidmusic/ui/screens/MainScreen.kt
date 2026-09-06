@@ -53,6 +53,7 @@ import com.electrodig.voidmusic.audio.DrumEngine
 import com.electrodig.voidmusic.audio.AudioBackend
 import com.electrodig.voidmusic.audio.AudioRuntimePhase
 import com.electrodig.voidmusic.audio.BuiltInKits
+import com.electrodig.voidmusic.audio.LibraryResult
 import com.electrodig.voidmusic.audio.Transport
 import com.electrodig.voidmusic.camera.CameraPreview
 import com.electrodig.voidmusic.camera.PreviewCoordinateMapper
@@ -78,6 +79,8 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Main viewfinder screen. Gated by CAMERA permission. Once granted:
@@ -146,6 +149,7 @@ fun MainScreen(
     var visionMetrics by remember(pipeline) { mutableStateOf(VisionMetrics()) }
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var previewViewport by remember { mutableStateOf<PreviewViewport?>(null) }
+    var appliedKitId by remember { mutableStateOf<String?>(null) }
     val hapticEnabled by rememberUpdatedState(settings.hapticEnabled)
 
     LaunchedEffect(pipeline, session.mode, detectionConfig) {
@@ -175,17 +179,31 @@ fun MainScreen(
         }
     }
 
-    // Audio follows foreground state independently from the camera surface.
-    DisposableEffect(performanceActive, drumEngine) {
-        if (performanceActive) {
-            drumEngine.setKit(BuiltInKits.byId(settings.activeKitId))
-            drumEngine.start()
-            drumEngine.setMasterVolume(settings.masterVolume)
+    // Preparation performs Room/file/decode work on KitLibrary's I/O dispatcher.
+    // Backend startup also stays off the main thread because SoundPool completion is awaited.
+    LaunchedEffect(performanceActive, settingsLoaded, settings.activeKitId, drumEngine) {
+        if (!performanceActive || !settingsLoaded) {
+            transport.stop()
+            drumEngine.stop()
+            return@LaunchedEffect
         }
-        onDispose {
-            if (performanceActive) {
-                transport.stop()
-                drumEngine.stop()
+        val requestedKitId = settings.activeKitId ?: BuiltInKits.DEFAULT.id
+        when (val result = viewModel.prepareKit(requestedKitId)) {
+            is LibraryResult.Success -> {
+                val switched = withContext(Dispatchers.Default) {
+                    drumEngine.setMasterVolume(settings.masterVolume)
+                    drumEngine.start(result.value)
+                }
+                if (switched) {
+                    appliedKitId = result.value.id
+                } else {
+                    val fallbackKitId = appliedKitId ?: BuiltInKits.DEFAULT.id
+                    if (requestedKitId != fallbackKitId) viewModel.setActiveKit(fallbackKitId)
+                }
+            }
+            is LibraryResult.Failure -> {
+                val fallbackKitId = appliedKitId ?: BuiltInKits.DEFAULT.id
+                if (requestedKitId != fallbackKitId) viewModel.setActiveKit(fallbackKitId)
             }
         }
     }
@@ -207,9 +225,6 @@ fun MainScreen(
     }
     // Apply audio settings as they change (PRD F8).
     LaunchedEffect(settings.masterVolume) { drumEngine.setMasterVolume(settings.masterVolume) }
-    LaunchedEffect(settings.activeKitId) {
-        drumEngine.setKit(BuiltInKits.byId(settings.activeKitId))
-    }
     DisposableEffect(Unit) {
         onDispose {
             drumEngine.stop()

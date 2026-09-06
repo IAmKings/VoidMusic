@@ -126,6 +126,7 @@ class LibraryDaoTest {
         assertThrows(SQLiteConstraintException::class.java) {
             runBlocking { dao.insertAsset(asset("asset-c", 'c').copy(storageKey = "a".repeat(64) + ".wav")) }
         }
+        Unit // Keep the generated JUnit4 method return type void on Android.
     }
 
     private fun kit(id: String) = LibraryKitEntity(

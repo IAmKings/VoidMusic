@@ -13,8 +13,8 @@ class BuiltInKitsTest {
             assertEquals(DrumPad.entries.toSet(), kit.samples.keys)
         }
         assertNotEquals(
-            BuiltInKits.DEFAULT.samples[DrumPad.KICK]?.rawResId,
-            BuiltInKits.ELECTRO.samples[DrumPad.KICK]?.rawResId
+            (BuiltInKits.DEFAULT.samples[DrumPad.KICK] as AudioSampleSource.BuiltIn).rawResId,
+            (BuiltInKits.ELECTRO.samples[DrumPad.KICK] as AudioSampleSource.BuiltIn).rawResId
         )
     }
 

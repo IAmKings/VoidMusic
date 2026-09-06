@@ -1,16 +1,21 @@
 package com.electrodig.voidmusic.persistence
 
 import android.content.Context
+import com.electrodig.voidmusic.audio.AudioSampleSource
 import com.electrodig.voidmusic.audio.BuiltInKits
 import com.electrodig.voidmusic.audio.DeleteKitReport
-import com.electrodig.voidmusic.audio.Kit
 import com.electrodig.voidmusic.audio.KitLibrary
 import com.electrodig.voidmusic.audio.KitSummary
 import com.electrodig.voidmusic.audio.LibraryError
 import com.electrodig.voidmusic.audio.LibraryErrorCode
 import com.electrodig.voidmusic.audio.LibraryResult
+import com.electrodig.voidmusic.audio.PlayableKit
+import com.electrodig.voidmusic.audio.PreparedKit
+import com.electrodig.voidmusic.audio.PreparedSample
 import com.electrodig.voidmusic.audio.ReconcileReport
 import com.electrodig.voidmusic.audio.ReplacePadReport
+import com.electrodig.voidmusic.audio.SoundPoolSampleSource
+import com.electrodig.voidmusic.audio.WavDecoder
 import com.electrodig.voidmusic.detection.color.DrumPad
 import java.io.File
 import java.io.InputStream
@@ -43,6 +48,7 @@ internal class RoomKitLibrary(
 ) : KitLibrary {
     private val dao = database.kitDao()
     private val mutationMutex = Mutex()
+    private val preparedBuiltIns = mutableMapOf<String, PreparedKit>()
     private val builtIns = BuiltInKits.all.map { kit ->
         KitSummary(id = kit.id, name = kit.name, isBuiltIn = true)
     }
@@ -151,6 +157,18 @@ internal class RoomKitLibrary(
             failure(LibraryErrorCode.KIT_NOT_FOUND)
         } else {
             LibraryResult.Success(Unit)
+        }
+    }
+
+    override suspend fun prepare(kitId: String): LibraryResult<PreparedKit> = mutate {
+        val builtIn = BuiltInKits.all.firstOrNull { it.id == kitId }
+        if (builtIn != null) {
+            preparedBuiltIns[builtIn.id]?.let { return@mutate LibraryResult.Success(it) }
+            prepareBuiltInKit(builtIn).also { result ->
+                if (result is LibraryResult.Success) preparedBuiltIns[builtIn.id] = result.value
+            }
+        } else {
+            prepareCustomKit(kitId)
         }
     }
 
@@ -266,13 +284,13 @@ internal class RoomKitLibrary(
     }
 
     private suspend fun copyBuiltInKit(
-        source: Kit,
+        source: PlayableKit,
         destination: LibraryKitEntity
     ): LibraryResult<String> {
         val materializedByHash = linkedMapOf<String, MaterializedAsset>()
         return try {
             val mappings = DrumPad.entries.map { pad ->
-                val sample = source.samples[pad]
+                val sample = source.samples[pad] as? AudioSampleSource.BuiltIn
                     ?: throw SourceFailure("Built-in kit is incomplete")
                 val prepared = try {
                     audioImporter.prepare { builtInSampleSource.open(sample.rawResId) }
@@ -327,6 +345,89 @@ internal class RoomKitLibrary(
                 recoveryRequired = createdFiles.any(File::exists)
             )
         }
+    }
+
+    private suspend fun prepareBuiltInKit(source: PlayableKit): LibraryResult<PreparedKit> {
+        val prepared = try {
+            DrumPad.entries.associateWith { pad ->
+                val sample = source.samples[pad] as? AudioSampleSource.BuiltIn
+                    ?: throw SourceFailure("Built-in kit is incomplete")
+                val normalized = builtInSampleSource.open(sample.rawResId).use { input ->
+                    WavDecoder.normalizeToMonoPcm16Wav(input.readBytes())
+                }
+                PreparedSample(
+                    source = sample,
+                    pcm = WavDecoder.toMonoFloats(normalized.bytes),
+                    soundPoolSource = SoundPoolSampleSource.BuiltIn(sample.rawResId)
+                )
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return failure(LibraryErrorCode.SOURCE_UNAVAILABLE)
+        }
+        return LibraryResult.Success(
+            PreparedKit(
+                id = source.id,
+                name = source.name,
+                sampleRate = WavDecoder.NORMALIZED_SAMPLE_RATE,
+                samples = prepared
+            )
+        )
+    }
+
+    private suspend fun prepareCustomKit(kitId: String): LibraryResult<PreparedKit> {
+        val kit = dao.kitById(kitId) ?: return failure(LibraryErrorCode.KIT_NOT_FOUND)
+        val mappings = dao.mappingsForKit(kitId)
+        if (!hasEveryPad(mappings)) return failure(LibraryErrorCode.INCOMPLETE_KIT)
+        val mappingByPad = mappings.associateBy(KitPadMappingEntity::pad)
+        val decodedByAssetId = mutableMapOf<String, PreparedSample>()
+        val prepared = linkedMapOf<DrumPad, PreparedSample>()
+
+        for (pad in DrumPad.entries) {
+            val mapping = mappingByPad[pad.name]
+                ?: return failure(LibraryErrorCode.INCOMPLETE_KIT)
+            val cached = decodedByAssetId[mapping.audioAssetId]
+            if (cached != null) {
+                prepared[pad] = cached
+                continue
+            }
+            val asset = dao.assetById(mapping.audioAssetId)
+                ?: return failure(LibraryErrorCode.INCOMPLETE_KIT)
+            if (asset.status != AudioAssetStatuses.READY) {
+                return failure(LibraryErrorCode.SOURCE_UNAVAILABLE)
+            }
+            val sample = try {
+                val file = assetStore.resolveAsset(asset.storageKey)
+                val bytes = file.readBytes()
+                val inspected = WavDecoder.inspect(bytes, WavDecoder.MAX_DURATION_SECONDS)
+                check(inspected.sampleRate == WavDecoder.NORMALIZED_SAMPLE_RATE)
+                check(inspected.channelCount == 1)
+                check(inspected.frameCount.toLong() == asset.frameCount)
+                check(file.length() == asset.byteSize)
+                PreparedSample(
+                    source = AudioSampleSource.Imported(asset.storageKey),
+                    pcm = WavDecoder.toMonoFloats(bytes),
+                    soundPoolSource = SoundPoolSampleSource.ManagedFile(file)
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                dao.updateAssetStatus(asset.id, AudioAssetStatuses.BROKEN, nowMs())
+                return failure(LibraryErrorCode.SOURCE_UNAVAILABLE)
+            }
+            decodedByAssetId[asset.id] = sample
+            prepared[pad] = sample
+        }
+
+        return LibraryResult.Success(
+            PreparedKit(
+                id = kit.id,
+                name = kit.name,
+                sampleRate = WavDecoder.NORMALIZED_SAMPLE_RATE,
+                samples = prepared
+            )
+        )
     }
 
     private suspend fun materialize(
@@ -475,8 +576,13 @@ internal class RoomKitLibrary(
         private const val STAGING_MAX_AGE_MS = 24L * 60L * 60L * 1_000L
         private const val STORAGE_VERSION = 1
         private const val VALIDATION_VERSION = 1
+        @Volatile private var instance: RoomKitLibrary? = null
 
-        fun open(context: Context): RoomKitLibrary {
+        fun open(context: Context): RoomKitLibrary = instance ?: synchronized(this) {
+            instance ?: create(context).also { instance = it }
+        }
+
+        private fun create(context: Context): RoomKitLibrary {
             val appContext = context.applicationContext
             val assetStore = AudioAssetStore(appContext)
             return RoomKitLibrary(

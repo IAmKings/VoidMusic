@@ -4,8 +4,9 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
 import android.util.Log
-import com.electrodig.voidmusic.R
 import com.electrodig.voidmusic.detection.color.DrumPad
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * AudioTrack (SoundPool) fallback drum engine for devices where the Oboe native
@@ -16,7 +17,13 @@ import com.electrodig.voidmusic.detection.color.DrumPad
  *
  * Latency target: < 80 ms (vs Oboe < 40 ms).
  */
-class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
+internal class SoundPoolDrumEngine(
+    private val context: Context,
+    private val kit: PreparedKit,
+    private val loadTimeoutMs: Long = LOAD_TIMEOUT_MS
+) : ActiveAudioBackend {
+
+    override val kind: AudioBackend = AudioBackend.SOUND_POOL
 
     private data class PendingTrigger(val pad: DrumPad, val velocity: Float)
 
@@ -26,6 +33,8 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
     private val pendingTriggers = ArrayDeque<PendingTrigger>()
     private var pendingLoads = 0
     private var failedLoads = 0
+    private var schedulingComplete = false
+    private var loadCompletion = CountDownLatch(1)
     @Volatile private var masterVolume = 1f
 
     fun start(): Boolean {
@@ -44,6 +53,7 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
         val pool = soundPool ?: return false
         pool.setOnLoadCompleteListener { completedPool, _, status ->
             val queued: List<PendingTrigger>
+            val loadingFinished: Boolean
             synchronized(this) {
                 if (soundPool !== completedPool) return@setOnLoadCompleteListener
                 if (status != 0) {
@@ -51,16 +61,10 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
                     failedLoads += 1
                 }
                 pendingLoads -= 1
-                if (pendingLoads != 0) return@setOnLoadCompleteListener
-
-                ready = failedLoads == 0 && soundIds.size == DrumPad.entries.size
-                queued = if (ready) {
-                    pendingTriggers.toList().also { pendingTriggers.clear() }
-                } else {
-                    pendingTriggers.clear()
-                    emptyList()
-                }
+                loadingFinished = schedulingComplete && pendingLoads == 0
+                queued = completeLoadingIfReady()
             }
+            if (!loadingFinished) return@setOnLoadCompleteListener
             if (queued.isNotEmpty()) queued.forEach { play(it.pad, it.velocity) }
             if (ready) {
                 Log.i(TAG, "SoundPool fallback ready with ${soundIds.size} samples")
@@ -71,35 +75,59 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
 
         pendingLoads = 0
         failedLoads = 0
+        schedulingComplete = false
+        loadCompletion = CountDownLatch(1)
         for (pad in DrumPad.entries) {
             val sample = kit.samples[pad]
             if (sample == null) {
                 failedLoads += 1
                 continue
             }
-            val resId = sample.rawResId
-            val soundId = pool.load(context, resId, 1)
+            synchronized(this) { pendingLoads += 1 }
+            val soundId = runCatching { sample.soundPoolSource.load(context, pool) }.getOrDefault(0)
             if (soundId == 0) {
-                failedLoads += 1
-                pendingLoads -= 1
+                synchronized(this) {
+                    failedLoads += 1
+                    pendingLoads -= 1
+                }
                 continue
             }
-            soundIds[pad] = soundId
-            pendingLoads += 1
+            synchronized(this) { soundIds[pad] = soundId }
         }
 
-        if (soundIds.isEmpty()) {
-            Log.e(TAG, "No samples loaded")
-            pool.release()
-            soundPool = null
+        val immediateQueued = synchronized(this) {
+            schedulingComplete = true
+            completeLoadingIfReady()
+        }
+        if (immediateQueued.isNotEmpty()) immediateQueued.forEach { play(it.pad, it.velocity) }
+
+        val completed = try {
+            loadCompletion.await(loadTimeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (soundIds.isEmpty() || !completed || !ready) {
+            Log.e(TAG, "SoundPool failed to load the complete kit")
+            stop()
             return false
         }
 
-        Log.i(TAG, "SoundPool fallback loading ${soundIds.size} samples")
+        Log.i(TAG, "SoundPool fallback ready with ${soundIds.size} samples")
         return true
     }
 
-    fun trigger(pad: DrumPad, velocity: Float) {
+    /** Must be called while holding this instance's monitor. */
+    private fun completeLoadingIfReady(): List<PendingTrigger> {
+        if (!schedulingComplete || pendingLoads != 0) return emptyList()
+        ready = failedLoads == 0 && soundIds.size == DrumPad.entries.size
+        val queued = if (ready) pendingTriggers.toList() else emptyList()
+        pendingTriggers.clear()
+        loadCompletion.countDown()
+        return queued
+    }
+
+    override fun trigger(pad: DrumPad, velocity: Float) {
         val normalizedVelocity = velocity.coerceIn(0f, 1f)
         synchronized(this) {
             if (!ready) {
@@ -119,11 +147,11 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
         soundPool?.play(soundId, vol, vol, 1, 0, 1f)
     }
 
-    fun setMasterVolume(volume: Float) {
+    override fun setMasterVolume(volume: Float) {
         masterVolume = volume.coerceIn(0f, 1f)
     }
 
-    fun stop() {
+    override fun stop() {
         val pool = synchronized(this) {
             val current = soundPool ?: return
             soundPool = null
@@ -132,6 +160,8 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
             pendingLoads = 0
             failedLoads = 0
             ready = false
+            schedulingComplete = false
+            loadCompletion.countDown()
             current
         }
         pool.release()
@@ -140,5 +170,6 @@ class SoundPoolDrumEngine(private val context: Context, private val kit: Kit) {
     companion object {
         private const val TAG = "SoundPoolEngine"
         private const val MAX_PENDING_TRIGGERS = 16
+        private const val LOAD_TIMEOUT_MS = 3_000L
     }
 }

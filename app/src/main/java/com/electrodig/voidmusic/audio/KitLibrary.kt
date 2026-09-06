@@ -76,6 +76,9 @@ interface KitLibrary {
 
     suspend fun renameKit(kitId: String, name: String): LibraryResult<Unit>
 
+    /** Reads, validates and decodes every pad on a background dispatcher. */
+    suspend fun prepare(kitId: String): LibraryResult<PreparedKit>
+
     suspend fun deleteKit(kitId: String): LibraryResult<DeleteKitReport>
 
     suspend fun reconcile(): LibraryResult<ReconcileReport>
