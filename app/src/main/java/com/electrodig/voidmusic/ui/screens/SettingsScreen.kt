@@ -135,10 +135,10 @@ fun SettingsScreen(
             // ---- Kit selection (PRD F6.6 / F7) ----
             Section("音色") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BuiltInKits.all.forEachIndexed { i, kit ->
+                    BuiltInKits.all.forEach { kit ->
                         FilterChip(
-                            selected = settings.activeKitIndex == i,
-                            onClick = { viewModel.setActiveKit(i) },
+                            selected = settings.activeKitId == kit.id,
+                            onClick = { viewModel.setActiveKit(kit.id) },
                             label = { Text(kit.name) }
                         )
                     }

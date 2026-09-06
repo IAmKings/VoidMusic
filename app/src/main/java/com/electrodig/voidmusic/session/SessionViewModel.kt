@@ -8,6 +8,7 @@ import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.color.HsvPreset
 import com.electrodig.voidmusic.persistence.PerformanceLevel
 import com.electrodig.voidmusic.persistence.CalibrationPoint
+import com.electrodig.voidmusic.persistence.CURRENT_KIT_SELECTION_VERSION
 import com.electrodig.voidmusic.persistence.Settings
 import com.electrodig.voidmusic.persistence.SettingsRepository
 import com.electrodig.voidmusic.performance.RuntimePerformancePolicy
@@ -117,7 +118,14 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLastBpm(bpm: Int) { repoUpdate { it.copy(lastBpm = bpm.coerceIn(40, 220)) } }
 
-    fun setActiveKit(index: Int) { repoUpdate { it.copy(activeKitIndex = index) } }
+    fun setActiveKit(id: String) {
+        repoUpdate {
+            it.copy(
+                activeKitId = id,
+                kitSelectionVersion = CURRENT_KIT_SELECTION_VERSION
+            )
+        }
+    }
 
     fun setHitVelocityThreshold(value: Float) {
         repoUpdate { it.copy(hitVelocityThreshold = value.coerceIn(0.2f, 2.0f)) }

@@ -57,6 +57,8 @@ object BuiltInKits {
 
     fun byIndex(i: Int): Kit = all.getOrElse(i) { DEFAULT }
 
+    fun byId(id: String?): Kit = all.firstOrNull { it.id == id } ?: DEFAULT
+
     private fun rawIdFor(pad: DrumPad): Int = when (pad) {
         DrumPad.KICK  -> R.raw.kick
         DrumPad.SNARE -> R.raw.snare

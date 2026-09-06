@@ -1,6 +1,7 @@
 package com.electrodig.voidmusic.persistence
 
 import android.content.Context
+import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -19,7 +20,7 @@ import kotlinx.serialization.json.Json
  */
 class SettingsRepository(private val context: Context) {
 
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = SETTINGS_JSON
 
     val settings: Flow<Settings> = context.dataStore.data.map { prefs ->
         decodeSettings(prefs[KEY_SETTINGS])
@@ -34,7 +35,7 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SETTINGS] = json.encodeToString(
                 Settings.serializer(),
-                settings.withCurrentHitTuning()
+                settings.withCurrentMigrations()
             )
         }
     }
@@ -45,14 +46,14 @@ class SettingsRepository(private val context: Context) {
             val current = decodeSettings(prefs[KEY_SETTINGS])
             prefs[KEY_SETTINGS] = json.encodeToString(
                 Settings.serializer(),
-                transform(current).withCurrentHitTuning()
+                transform(current).withCurrentMigrations()
             )
         }
     }
 
     private fun decodeSettings(encoded: String?): Settings = encoded
         ?.let { runCatching { json.decodeFromString<Settings>(it) }.getOrNull() }
-        ?.withCurrentHitTuning()
+        ?.withCurrentMigrations()
         ?: Settings.DEFAULT
 
     suspend fun markOnboardingCompleted() {
@@ -67,8 +68,40 @@ class SettingsRepository(private val context: Context) {
     }
 
     companion object {
-        private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ods_settings")
-        private val KEY_SETTINGS = stringPreferencesKey("settings_json")
-        private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+            name = "ods_settings",
+            produceMigrations = { listOf(SettingsPreferencesMigration()) }
+        )
     }
+}
+
+private val SETTINGS_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+private val KEY_SETTINGS = stringPreferencesKey("settings_json")
+private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+
+/** Persists the stable kit id before consumers observe legacy index-based settings. */
+internal class SettingsPreferencesMigration : DataMigration<Preferences> {
+    override suspend fun shouldMigrate(currentData: Preferences): Boolean {
+        val encoded = currentData[KEY_SETTINGS] ?: return false
+        val settings = runCatching {
+            SETTINGS_JSON.decodeFromString<Settings>(encoded)
+        }.getOrNull() ?: return false
+        return settings.kitSelectionVersion < CURRENT_KIT_SELECTION_VERSION ||
+            settings.activeKitId == null
+    }
+
+    override suspend fun migrate(currentData: Preferences): Preferences {
+        val encoded = currentData[KEY_SETTINGS] ?: return currentData
+        val settings = runCatching {
+            SETTINGS_JSON.decodeFromString<Settings>(encoded)
+        }.getOrNull() ?: return currentData
+        return currentData.toMutablePreferences().apply {
+            this[KEY_SETTINGS] = SETTINGS_JSON.encodeToString(
+                Settings.serializer(),
+                settings.withCurrentMigrations()
+            )
+        }
+    }
+
+    override suspend fun cleanUp() = Unit
 }

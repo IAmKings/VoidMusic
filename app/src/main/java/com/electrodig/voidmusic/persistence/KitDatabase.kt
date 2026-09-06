@@ -3,72 +3,153 @@ package com.electrodig.voidmusic.persistence
 import android.content.Context
 import androidx.room.Dao
 import androidx.room.Database
-import androidx.room.Delete
 import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
-import com.electrodig.voidmusic.audio.BuiltInKits
-import com.electrodig.voidmusic.audio.Kit
+import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
 
-/** Persisted metadata for selectable built-in kits; audio PCM stays in res/raw. */
-@Entity(tableName = "kit_metadata")
-data class KitEntity(
+/** A user-created kit. Built-in kits remain code-owned and are not seeded here. */
+@Entity(tableName = "library_kits")
+data class LibraryKitEntity(
     @PrimaryKey val id: String,
     val name: String,
     val displayOrder: Int,
-    /** Stable diagnostic representation of the pad → bundled sample mapping. */
-    val sampleSignature: String
+    val createdAtMs: Long,
+    val updatedAtMs: Long
+)
+
+/** Metadata for one normalized WAV stored under filesDir/audio-assets. */
+@Entity(
+    tableName = "audio_assets",
+    indices = [
+        Index(value = ["storageKey"], unique = true),
+        Index(value = ["sha256"], unique = true)
+    ]
+)
+data class AudioAssetEntity(
+    @PrimaryKey val id: String,
+    val storageKey: String,
+    val originalName: String,
+    val sha256: String,
+    val byteSize: Long,
+    val frameCount: Long,
+    val sampleRate: Int,
+    val channelCount: Int,
+    val encoding: String,
+    val storageVersion: Int,
+    val validationVersion: Int,
+    val status: String,
+    val createdAtMs: Long,
+    val updatedAtMs: Long
+)
+
+/** Stable string values stored by [AudioAssetEntity.status]. */
+object AudioAssetStatuses {
+    const val READY = "READY"
+    const val BROKEN = "BROKEN"
+    const val PENDING_DELETE = "PENDING_DELETE"
+
+    val all: Set<String> = setOf(READY, BROKEN, PENDING_DELETE)
+}
+
+/** One complete kit has exactly one mapping for each stable drum-pad name. */
+@Entity(
+    tableName = "kit_pad_mappings",
+    primaryKeys = ["kitId", "pad"],
+    foreignKeys = [
+        ForeignKey(
+            entity = LibraryKitEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["kitId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = AudioAssetEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["audioAssetId"],
+            onDelete = ForeignKey.RESTRICT
+        )
+    ],
+    indices = [Index("kitId"), Index("audioAssetId")]
+)
+data class KitPadMappingEntity(
+    val kitId: String,
+    val pad: String,
+    val audioAssetId: String
 )
 
 @Dao
 interface KitDao {
-    @Query("SELECT * FROM kit_metadata ORDER BY displayOrder ASC")
-    suspend fun all(): List<KitEntity>
+    @Query("SELECT * FROM library_kits ORDER BY displayOrder ASC, id ASC")
+    fun observeAllKits(): Flow<List<LibraryKitEntity>>
 
-    @Query("SELECT * FROM kit_metadata WHERE id = :id")
-    suspend fun byId(id: String): KitEntity?
+    @Query("SELECT * FROM library_kits ORDER BY displayOrder ASC, id ASC")
+    suspend fun allKits(): List<LibraryKitEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(kit: KitEntity)
+    @Query("SELECT * FROM library_kits WHERE id = :id")
+    suspend fun kitById(id: String): LibraryKitEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertAll(kits: List<KitEntity>)
+    @Query("SELECT * FROM audio_assets WHERE id = :id")
+    suspend fun assetById(id: String): AudioAssetEntity?
 
-    @Delete
-    suspend fun delete(kit: KitEntity)
+    @Query("SELECT * FROM audio_assets WHERE sha256 = :sha256")
+    suspend fun assetBySha256(sha256: String): AudioAssetEntity?
+
+    @Query("SELECT * FROM kit_pad_mappings WHERE kitId = :kitId ORDER BY pad ASC")
+    suspend fun mappingsForKit(kitId: String): List<KitPadMappingEntity>
+
+    @Query("SELECT COUNT(*) FROM kit_pad_mappings WHERE audioAssetId = :assetId")
+    suspend fun assetReferenceCount(assetId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertKit(kit: LibraryKitEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAsset(asset: AudioAssetEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertMappings(mappings: List<KitPadMappingEntity>)
+
+    @Query("DELETE FROM library_kits WHERE id = :kitId")
+    suspend fun deleteKitById(kitId: String)
+
+    @Query("DELETE FROM audio_assets WHERE id = :assetId")
+    suspend fun deleteAssetById(assetId: String)
+
+    @Transaction
+    suspend fun insertCompleteKit(
+        kit: LibraryKitEntity,
+        assets: List<AudioAssetEntity>,
+        mappings: List<KitPadMappingEntity>
+    ) {
+        insertKit(kit)
+        assets.forEach { insertAsset(it) }
+        insertMappings(mappings)
+    }
 }
 
-@Database(entities = [KitEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [LibraryKitEntity::class, AudioAssetEntity::class, KitPadMappingEntity::class],
+    version = 1,
+    exportSchema = true
+)
 abstract class KitDatabase : RoomDatabase() {
     abstract fun kitDao(): KitDao
-}
 
-/** Owns database construction and the initial built-in Kit metadata seed. */
-class KitRepository(context: Context) {
-    private val db = Room.databaseBuilder(context, KitDatabase::class.java, DATABASE_NAME).build()
-    private val dao = db.kitDao()
+    companion object {
+        const val DATABASE_NAME = "void_music_library.db"
 
-    suspend fun seedBuiltIns() {
-        dao.upsertAll(BuiltInKits.all.mapIndexed(::toEntity))
+        fun open(context: Context): KitDatabase = Room.databaseBuilder(
+            context.applicationContext,
+            KitDatabase::class.java,
+            DATABASE_NAME
+        ).build()
     }
-
-    suspend fun all(): List<KitEntity> = dao.all()
-    suspend fun byId(id: String): KitEntity? = dao.byId(id)
-    suspend fun upsert(kit: KitEntity) = dao.upsert(kit)
-    suspend fun delete(kit: KitEntity) = dao.delete(kit)
-
-    private fun toEntity(index: Int, kit: Kit): KitEntity = KitEntity(
-        id = kit.id,
-        name = kit.name,
-        displayOrder = index,
-        sampleSignature = kit.samples.entries
-            .sortedBy { it.key.ordinal }
-            .joinToString(separator = ";") { (pad, sample) -> "${pad.name}:${sample.rawResId}" }
-    )
-
-    private companion object { const val DATABASE_NAME = "ods_kits.db" }
 }

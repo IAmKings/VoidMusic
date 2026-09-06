@@ -22,4 +22,11 @@ class BuiltInKitsTest {
     fun `unknown index resolves to default kit`() {
         assertEquals(BuiltInKits.DEFAULT, BuiltInKits.byIndex(99))
     }
+
+    @Test
+    fun `stable id resolves built-in kit and unknown id falls back`() {
+        assertEquals(BuiltInKits.ELECTRO, BuiltInKits.byId("electro"))
+        assertEquals(BuiltInKits.DEFAULT, BuiltInKits.byId("missing"))
+        assertEquals(BuiltInKits.DEFAULT, BuiltInKits.byId(null))
+    }
 }

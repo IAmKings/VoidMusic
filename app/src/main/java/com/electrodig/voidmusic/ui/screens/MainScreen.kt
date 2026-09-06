@@ -178,7 +178,7 @@ fun MainScreen(
     // Audio follows foreground state independently from the camera surface.
     DisposableEffect(performanceActive, drumEngine) {
         if (performanceActive) {
-            drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
+            drumEngine.setKit(BuiltInKits.byId(settings.activeKitId))
             drumEngine.start()
             drumEngine.setMasterVolume(settings.masterVolume)
         }
@@ -207,8 +207,8 @@ fun MainScreen(
     }
     // Apply audio settings as they change (PRD F8).
     LaunchedEffect(settings.masterVolume) { drumEngine.setMasterVolume(settings.masterVolume) }
-    LaunchedEffect(settings.activeKitIndex) {
-        drumEngine.setKit(BuiltInKits.byIndex(settings.activeKitIndex))
+    LaunchedEffect(settings.activeKitId) {
+        drumEngine.setKit(BuiltInKits.byId(settings.activeKitId))
     }
     DisposableEffect(Unit) {
         onDispose {
