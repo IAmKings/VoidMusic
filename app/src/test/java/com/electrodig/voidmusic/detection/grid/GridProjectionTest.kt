@@ -8,6 +8,55 @@ import org.junit.Test
 
 class GridProjectionTest {
     @Test
+    fun `production factory creates all 64 centers without native runtime`() {
+        val projection = GridProjection.createOrNull(
+            corners = rectangleCorners(),
+            rows = 4,
+            steps = 16
+        )
+
+        requireNotNull(projection)
+        assertEquals(4, projection.cellCenters.size)
+        assertTrue(projection.cellCenters.all { it.size == 16 })
+        assertEquals(64, projection.cellCenters.sumOf { it.size })
+        assertEquals(GridScanner.Cell(0, 0), projection.locateCell(projection.cellCenters[0][0]))
+        assertEquals(GridScanner.Cell(3, 15), projection.locateCell(projection.cellCenters[3][15]))
+    }
+
+    @Test
+    fun `production factory maps perspective quadrilateral`() {
+        val corners = listOf(
+            GridScanner.GridPoint(0.20f, 0.15f),
+            GridScanner.GridPoint(0.82f, 0.22f),
+            GridScanner.GridPoint(0.92f, 0.84f),
+            GridScanner.GridPoint(0.08f, 0.76f)
+        )
+
+        val projection = requireNotNull(GridProjection.createOrNull(corners, rows = 4, steps = 16))
+
+        projection.cellCenters.forEachIndexed { row, cells ->
+            cells.forEachIndexed { step, center ->
+                assertEquals(GridScanner.Cell(row, step), projection.locateCell(center))
+            }
+        }
+    }
+
+    @Test
+    fun `production factory rejects crossed and collapsed corners`() {
+        val rectangle = rectangleCorners()
+        val crossed = listOf(rectangle[0], rectangle[2], rectangle[1], rectangle[3])
+        val collapsed = List(4) { GridScanner.GridPoint(0.5f, 0.5f) }
+
+        assertNull(GridProjection.createOrNull(crossed, rows = 4, steps = 16))
+        assertNull(GridProjection.createOrNull(collapsed, rows = 4, steps = 16))
+        assertNull(GridProjection.createOrNull(rectangle.reversed(), rows = 4, steps = 16))
+        assertEquals(
+            GridProjectionResult.Failure(GridProjectionError.INVALID_QUADRILATERAL),
+            GridProjection.create(crossed, rows = 4, steps = 16)
+        )
+    }
+
+    @Test
     fun `rectangular projection maps centers and cells without OpenCV calls`() {
         val projection = rectangularProjection(rows = 4, steps = 16)
 

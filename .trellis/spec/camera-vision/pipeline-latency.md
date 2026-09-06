@@ -191,6 +191,25 @@ Imgproc.resize(rgba, scaledRgba, targetSize)
 
 ## Common Mistakes
 
+### Step-grid projection and calibration contract
+
+- `GridProjection.create` must be pure Kotlin and safe to call before the OpenCV loader runs.
+  Calibration is UI state initialization, not a native-vision pipeline operation.
+- Validate exactly four finite, normalized, strictly convex TL/TR/BR/BL corners before
+  deriving the homography. Return a typed failure; do not collapse the UI boundary into a
+  silent `null` result.
+- Build the projection only when calibration changes. Rendering and per-frame hit lookup
+  consume the immutable projection and perform no `Mat` allocation or storage I/O.
+- A missing projection is a user-visible state: STEP shows a calibration prompt and its
+  play action opens calibration instead of starting `Transport`.
+- Calibration edits are drafts. Only an explicit valid confirmation publishes through
+  `GridScanner` and persists corners; cancellation preserves the last valid projection.
+- Cell footprints must use neighbouring projected-center spacing, not full viewport rows
+  and columns, or a calibrated sub-region will render overlapping bands instead of 4×16 cells.
+- Required regression coverage: production projection factory on the JVM (rectangle,
+  perspective, crossed and collapsed corners), Compose empty/default-confirm/cancel states,
+  and a signed-device cold-start restoration check.
+
 ### Mistake: Forgetting to rotate the bitmap
 
 **Symptom**: Hand skeleton appears 90° rotated relative to the real hand;

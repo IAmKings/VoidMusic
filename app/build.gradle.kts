@@ -93,6 +93,10 @@ android {
 
     buildTypes {
         debug {
+            // Keep local/instrumented builds beside the signed production app.
+            // This prevents Android's test installer from removing user data on a signature mismatch.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
             isMinifyEnabled = false
             // Debug: keep x86_64 for emulator testing.
             ndk {

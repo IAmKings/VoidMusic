@@ -61,6 +61,7 @@ import com.electrodig.voidmusic.camera.CameraPreview
 import com.electrodig.voidmusic.camera.PreviewCoordinateMapper
 import com.electrodig.voidmusic.camera.VisionMetrics
 import com.electrodig.voidmusic.detection.color.HsvRange
+import com.electrodig.voidmusic.detection.grid.GridProjection
 import com.electrodig.voidmusic.detection.grid.GridScanner
 import com.electrodig.voidmusic.performance.LivePerformanceEvent
 import com.electrodig.voidmusic.performance.LivePerformanceInputs
@@ -146,6 +147,7 @@ fun MainScreen(
 
     var activePresetIndex by remember { mutableIntStateOf(0) }
     var calibrating by remember { mutableStateOf(false) }
+    var gridProjection by remember { mutableStateOf<GridProjection?>(null) }
     var showColorControls by remember { mutableStateOf(false) }
     var pickingColor by remember { mutableStateOf(false) }
     var sessionRestored by remember { mutableStateOf(false) }
@@ -232,9 +234,18 @@ fun MainScreen(
         transport.restore(settings.lastBpm, settings.sequenceGrid)
         val corners = settings.calibration
         if (corners.size == 4) {
-            gridScanner.setCalibration(corners.map { GridScanner.GridPoint(it.x, it.y) })
+            val restored = gridScanner.setCalibration(
+                corners.map { GridScanner.GridPoint(it.x, it.y) }
+            )
+            if (restored) {
+                gridProjection = gridScanner.projection()
+            } else {
+                gridScanner.clearCalibration()
+                gridProjection = null
+            }
         } else {
             gridScanner.clearCalibration()
+            gridProjection = null
         }
         sessionRestored = true
     }
@@ -372,7 +383,7 @@ fun MainScreen(
                     val tip = mappedHands.firstOrNull()?.fingertip
                     val fingertip = if (tip != null) GridScanner.GridPoint(tip.x, tip.y) else null
                     StepSequencerOverlay(
-                        projection = gridScanner.projection(),
+                        projection = gridProjection,
                         sequence = sequence,
                         fingertip = fingertip,
                         modifier = Modifier.fillMaxSize()
@@ -424,12 +435,17 @@ fun MainScreen(
             // Calibration overlay (F1.4) replaces the live overlays while active.
             if (calibrating) {
                 CalibrationOverlay(
-                    initialCorners = gridScanner.calibration(),
+                    initialCorners = gridProjection?.corners,
                     onConfirm = { corners ->
-                        if (gridScanner.setCalibration(corners)) {
+                        val accepted = gridScanner.setCalibration(corners)
+                        if (accepted) {
+                            gridProjection = gridScanner.projection()
                             viewModel.setCalibration(corners)
+                            calibrating = false
                         }
+                        accepted
                     },
+                    onCancel = { calibrating = false },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -476,7 +492,23 @@ fun MainScreen(
                             bpm = sequence.bpm,
                             isPlaying = sequence.isPlaying,
                             onBpmChange = transport::setBpm,
-                            onPlayToggle = { if (sequence.isPlaying) transport.stop() else transport.play() },
+                            onPlayToggle = {
+                                when (stepPlaybackAction(
+                                    isPlaying = sequence.isPlaying,
+                                    isCalibrated = gridProjection != null
+                                )) {
+                                    StepPlaybackAction.STOP -> transport.stop()
+                                    StepPlaybackAction.PLAY -> transport.play()
+                                    StepPlaybackAction.CALIBRATE -> {
+                                        calibrating = true
+                                        Toast.makeText(
+                                            context,
+                                            "请先完成四点校准",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            },
                             onClear = transport::clear
                         )
                     } else {
