@@ -28,6 +28,7 @@ fun DrumEngine.setPreparedKit(newKit: PreparedKit): Boolean
 - Oboe receives only predecoded PCM and the prepared sample rate. Both exclusive/Float and shared/I16 stream attempts request that rate.
 - SoundPool startup succeeds only after every scheduled sample reports successful completion. A queued load, partial kit, timeout, or failed sample is startup failure.
 - A kit switch commits only after a backend session starts. Startup failure restores the previous `PreparedKit`; transition triggers use a bounded queue and replay after recovery.
+- A failed backend start publishes `PLAYBACK_FAILURE`, informs the user immediately, and persists the restored kit selection.
 - Foreground stop retains the prepared kit so resume can rebuild it without weakening the rollback path.
 - The health monitor rebuilds the current prepared kit after an Oboe route error and may fall back to SoundPool through the same backend-start contract.
 

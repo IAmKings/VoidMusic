@@ -53,6 +53,8 @@ import com.electrodig.voidmusic.audio.DrumEngine
 import com.electrodig.voidmusic.audio.AudioBackend
 import com.electrodig.voidmusic.audio.AudioRuntimePhase
 import com.electrodig.voidmusic.audio.BuiltInKits
+import com.electrodig.voidmusic.audio.LibraryError
+import com.electrodig.voidmusic.audio.LibraryErrorCode
 import com.electrodig.voidmusic.audio.LibraryResult
 import com.electrodig.voidmusic.audio.Transport
 import com.electrodig.voidmusic.camera.CameraPreview
@@ -106,6 +108,7 @@ fun MainScreen(
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
+    val playbackKitRevision by viewModel.playbackKitRevision.collectAsStateWithLifecycle()
     val runtimePerformanceLevel by viewModel.runtimePerformanceLevel.collectAsStateWithLifecycle()
     val perfConfig = PerformanceConfig.forLevel(runtimePerformanceLevel)
     val gridScanner = remember { GridScanner() }
@@ -181,7 +184,13 @@ fun MainScreen(
 
     // Preparation performs Room/file/decode work on KitLibrary's I/O dispatcher.
     // Backend startup also stays off the main thread because SoundPool completion is awaited.
-    LaunchedEffect(performanceActive, settingsLoaded, settings.activeKitId, drumEngine) {
+    LaunchedEffect(
+        performanceActive,
+        settingsLoaded,
+        settings.activeKitId,
+        playbackKitRevision,
+        drumEngine
+    ) {
         if (!performanceActive || !settingsLoaded) {
             transport.stop()
             drumEngine.stop()
@@ -197,11 +206,20 @@ fun MainScreen(
                 if (switched) {
                     appliedKitId = result.value.id
                 } else {
+                    viewModel.reportKitPlaybackFailure(
+                        LibraryError(LibraryErrorCode.PLAYBACK_FAILURE)
+                    )
+                    Toast.makeText(
+                        context,
+                        "音色播放启动失败，已恢复上一套音色",
+                        Toast.LENGTH_LONG
+                    ).show()
                     val fallbackKitId = appliedKitId ?: BuiltInKits.DEFAULT.id
                     if (requestedKitId != fallbackKitId) viewModel.setActiveKit(fallbackKitId)
                 }
             }
             is LibraryResult.Failure -> {
+                viewModel.reportKitPlaybackFailure(result.error)
                 val fallbackKitId = appliedKitId ?: BuiltInKits.DEFAULT.id
                 if (requestedKitId != fallbackKitId) viewModel.setActiveKit(fallbackKitId)
             }

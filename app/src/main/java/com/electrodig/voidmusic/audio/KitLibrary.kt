@@ -25,7 +25,8 @@ enum class LibraryErrorCode {
     SOURCE_UNAVAILABLE,
     IMPORT_FAILED,
     STORAGE_FAILURE,
-    DATABASE_FAILURE
+    DATABASE_FAILURE,
+    PLAYBACK_FAILURE
 }
 
 data class LibraryError(

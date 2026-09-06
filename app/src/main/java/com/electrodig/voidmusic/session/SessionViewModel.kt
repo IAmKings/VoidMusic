@@ -1,13 +1,19 @@
 package com.electrodig.voidmusic.session
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.electrodig.voidmusic.audio.LibraryResult
+import com.electrodig.voidmusic.audio.LibraryError
+import com.electrodig.voidmusic.audio.LibraryErrorCode
+import com.electrodig.voidmusic.audio.KitSummary
 import com.electrodig.voidmusic.audio.PreparedKit
 import com.electrodig.voidmusic.detection.color.DetectionConfig
 import com.electrodig.voidmusic.detection.color.DrumZone
 import com.electrodig.voidmusic.detection.color.HsvPreset
+import com.electrodig.voidmusic.detection.color.DrumPad
 import com.electrodig.voidmusic.persistence.PerformanceLevel
 import com.electrodig.voidmusic.persistence.CalibrationPoint
 import com.electrodig.voidmusic.persistence.CURRENT_KIT_SELECTION_VERSION
@@ -24,7 +30,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Holds the live session state shared across the single-Activity Compose tree
@@ -36,6 +45,27 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val performancePolicy = RuntimePerformancePolicy(app)
     private val kitLibrary = RoomKitLibrary.open(app)
+    private val _kitOperation = MutableStateFlow<KitOperation?>(null)
+    private val _kitMessage = MutableStateFlow<KitActionMessage?>(null)
+    private val _playbackKitRevision = MutableStateFlow(0L)
+    private var nextKitMessageId = 0L
+
+    val kitLibraryState: StateFlow<KitLibraryUiState> = combine(
+        kitLibrary.kits,
+        _kitOperation,
+        _kitMessage
+    ) { kits, operation, message -> KitLibraryUiState(kits, operation, message) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            KitLibraryUiState(
+                kits = com.electrodig.voidmusic.audio.BuiltInKits.all.map {
+                    KitSummary(it.id, it.name, isBuiltIn = true)
+                }
+            )
+        )
+
+    val playbackKitRevision: StateFlow<Long> = _playbackKitRevision.asStateFlow()
 
     private val _uiState = MutableStateFlow(SessionUiState())
     val uiState: StateFlow<SessionUiState> = _uiState.asStateFlow()
@@ -135,6 +165,78 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     /** Resolves and decodes a complete kit away from the Compose/main thread. */
     suspend fun prepareKit(id: String): LibraryResult<PreparedKit> = kitLibrary.prepare(id)
 
+    fun selectKit(id: String) = launchKitOperation(
+        operation = KitOperation(KitAction.SELECT, kitId = id),
+        action = KitAction.SELECT,
+        block = { kitLibrary.prepare(id) },
+        onSuccess = { persistActiveKit(id) }
+    )
+
+    fun copyActiveKit(name: String) {
+        val sourceId = settings.value.activeKitId ?: com.electrodig.voidmusic.audio.BuiltInKits.DEFAULT.id
+        launchKitOperation(
+            operation = KitOperation(KitAction.COPY, kitId = sourceId),
+            action = KitAction.COPY,
+            block = { kitLibrary.copyKit(sourceId, name) },
+            onSuccess = { newId -> persistActiveKit(newId) }
+        )
+    }
+
+    fun renameKit(id: String, name: String) = launchKitOperation(
+        operation = KitOperation(KitAction.RENAME, kitId = id),
+        action = KitAction.RENAME,
+        block = { kitLibrary.renameKit(id, name) }
+    )
+
+    fun deleteKit(id: String) {
+        val wasActive = settings.value.activeKitId == id
+        launchKitOperation(
+            operation = KitOperation(KitAction.DELETE, kitId = id),
+            action = KitAction.DELETE,
+            block = {
+                if (wasActive) persistActiveKit(com.electrodig.voidmusic.audio.BuiltInKits.DEFAULT.id)
+                when (val result = kitLibrary.deleteKit(id)) {
+                    is LibraryResult.Success -> result
+                    is LibraryResult.Failure -> {
+                        if (wasActive) persistActiveKit(id)
+                        result
+                    }
+                }
+            },
+            pendingCleanupCount = { it.pendingAssetCount }
+        )
+    }
+
+    fun replaceKitPad(kitId: String, pad: DrumPad, uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        launchKitOperation(
+            operation = KitOperation(KitAction.IMPORT, kitId = kitId, pad = pad),
+            action = KitAction.IMPORT,
+            block = {
+                val originalName = withContext(Dispatchers.IO) {
+                    resolver.displayName(uri)
+                }
+                kitLibrary.replacePad(
+                    kitId = kitId,
+                    pad = pad,
+                    originalName = originalName
+                ) {
+                    requireNotNull(resolver.openInputStream(uri)) { "Document stream unavailable" }
+                }
+            },
+            onSuccess = { _playbackKitRevision.update { it + 1L } },
+            pendingCleanupCount = { it.pendingCleanupCount }
+        )
+    }
+
+    fun clearKitMessage(id: Long) {
+        _kitMessage.update { current -> current?.takeUnless { it.id == id } }
+    }
+
+    fun reportKitPlaybackFailure(error: LibraryError) {
+        publishKitMessage(KitAction.PLAYBACK, success = false, error = error)
+    }
+
     fun setHitVelocityThreshold(value: Float) {
         repoUpdate { it.copy(hitVelocityThreshold = value.coerceIn(0.2f, 2.0f)) }
     }
@@ -174,6 +276,73 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     private fun repoUpdate(transform: (Settings) -> Settings) {
         viewModelScope.launch { repo.update(transform) }
     }
+
+    private suspend fun persistActiveKit(id: String) {
+        repo.update {
+            it.copy(activeKitId = id, kitSelectionVersion = CURRENT_KIT_SELECTION_VERSION)
+        }
+    }
+
+    private fun <T> launchKitOperation(
+        operation: KitOperation,
+        action: KitAction,
+        block: suspend () -> LibraryResult<T>,
+        onSuccess: suspend (T) -> Unit = {},
+        pendingCleanupCount: (T) -> Int = { 0 }
+    ) {
+        if (!_kitOperation.compareAndSet(null, operation)) return
+        viewModelScope.launch {
+            try {
+                when (val result = block()) {
+                    is LibraryResult.Success -> {
+                        onSuccess(result.value)
+                        publishKitMessage(
+                            action = action,
+                            success = true,
+                            pendingCleanupCount = pendingCleanupCount(result.value)
+                        )
+                    }
+                    is LibraryResult.Failure -> publishKitMessage(
+                        action = action,
+                        success = false,
+                        error = result.error
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                publishKitMessage(
+                    action = action,
+                    success = false,
+                    error = LibraryError(LibraryErrorCode.STORAGE_FAILURE)
+                )
+            } finally {
+                _kitOperation.compareAndSet(operation, null)
+            }
+        }
+    }
+
+    private fun publishKitMessage(
+        action: KitAction,
+        success: Boolean,
+        error: LibraryError? = null,
+        pendingCleanupCount: Int = 0
+    ) {
+        nextKitMessageId += 1L
+        _kitMessage.value = KitActionMessage(
+            id = nextKitMessageId,
+            action = action,
+            success = success,
+            error = error,
+            pendingCleanupCount = pendingCleanupCount
+        )
+    }
+
+    private fun android.content.ContentResolver.displayName(uri: Uri): String = runCatching {
+        query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull().orEmpty().ifBlank { "sample.wav" }
 
     // ---- Transient detection state ----
 

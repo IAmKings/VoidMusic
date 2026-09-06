@@ -266,6 +266,7 @@ class RoomKitLibraryMutationTest {
         val builtIn = library.prepare("default").successValue()
         val cachedBuiltIn = library.prepare("default").successValue()
         val imported = library.prepare(customId).successValue()
+        val cachedImported = library.prepare(customId).successValue()
 
         assertEquals(48_000, builtIn.sampleRate)
         assertEquals(48_000, imported.sampleRate)
@@ -275,7 +276,32 @@ class RoomKitLibraryMutationTest {
         assertTrue(imported.samples.values.all { it.source is AudioSampleSource.Imported })
         assertTrue(imported.samples.values.all { it.pcm.isNotEmpty() })
         assertSame(builtIn, cachedBuiltIn)
+        assertSame(imported, cachedImported)
         assertEquals(1, imported.samples.values.toSet().size)
+    }
+
+    @Test
+    fun customPreparationCacheIsInvalidatedByRenameAndPadReplacement() = runBlocking {
+        val library = library()
+        val customId = library.copyKit("default", "缓存音色").successValue()
+        val initial = library.prepare(customId).successValue()
+
+        library.renameKit(customId, "更新名称").successValue()
+        val renamed = library.prepare(customId).successValue()
+        assertTrue(initial !== renamed)
+        assertEquals("更新名称", renamed.name)
+
+        library.replacePad(customId, DrumPad.KICK, "kick.wav") {
+            differentWav().inputStream()
+        }.successValue()
+        val replaced = library.prepare(customId).successValue()
+
+        assertTrue(renamed !== replaced)
+        assertTrue(
+            !renamed.samples.getValue(DrumPad.KICK).pcm.contentEquals(
+                replaced.samples.getValue(DrumPad.KICK).pcm
+            )
+        )
     }
 
     @Test

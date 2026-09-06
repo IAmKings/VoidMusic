@@ -33,6 +33,11 @@ local.properties
 # Keystore files
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pkcs12
+*.pem
+*.key
 keystore.properties
 
 # Native build output

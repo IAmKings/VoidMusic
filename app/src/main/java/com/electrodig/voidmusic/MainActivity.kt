@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
                 if (onboardingState.isLoaded) {
                     VoidMusicNavHost(
                         startRoute = initialDestination(onboardingState.completed),
+                        viewModel = viewModel,
                         onOnboardingComplete = viewModel::completeOnboarding
                     )
                 } else {

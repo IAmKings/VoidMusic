@@ -49,6 +49,7 @@ internal class RoomKitLibrary(
     private val dao = database.kitDao()
     private val mutationMutex = Mutex()
     private val preparedBuiltIns = mutableMapOf<String, PreparedKit>()
+    private val preparedCustomKits = mutableMapOf<String, PreparedKit>()
     private val builtIns = BuiltInKits.all.map { kit ->
         KitSummary(id = kit.id, name = kit.name, isBuiltIn = true)
     }
@@ -139,6 +140,7 @@ internal class RoomKitLibrary(
         val cleanupPending = oldPending?.let {
             cleanupPendingAssetSafely(it) != CleanupOutcome.DELETED
         } == true
+        preparedCustomKits.remove(kitId)
         LibraryResult.Success(
             ReplacePadReport(
                 reusedExistingAsset = materialized.existedBefore,
@@ -156,6 +158,7 @@ internal class RoomKitLibrary(
         if (dao.updateKitName(kitId, normalizedName, nowMs()) != 1) {
             failure(LibraryErrorCode.KIT_NOT_FOUND)
         } else {
+            preparedCustomKits.remove(kitId)
             LibraryResult.Success(Unit)
         }
     }
@@ -168,7 +171,10 @@ internal class RoomKitLibrary(
                 if (result is LibraryResult.Success) preparedBuiltIns[builtIn.id] = result.value
             }
         } else {
-            prepareCustomKit(kitId)
+            preparedCustomKits[kitId]?.let { return@mutate LibraryResult.Success(it) }
+            prepareCustomKit(kitId).also { result ->
+                if (result is LibraryResult.Success) preparedCustomKits[kitId] = result.value
+            }
         }
     }
 
@@ -178,6 +184,7 @@ internal class RoomKitLibrary(
         }
         if (dao.kitById(kitId) == null) return@mutate failure(LibraryErrorCode.KIT_NOT_FOUND)
         val pending = dao.deleteKitAndMarkOrphans(kitId, nowMs())
+        preparedCustomKits.remove(kitId)
         var deleted = 0
         var failed = 0
         pending.forEach { asset ->

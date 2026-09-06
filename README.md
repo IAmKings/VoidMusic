@@ -9,7 +9,14 @@ AR 桌面鼓机 — 用手机摄像头识别桌面上的彩色物体和手部动
 - **手部追踪** — MediaPipe HandLandmarker 实时追踪指尖位置
 - **颜色分割** — OpenCV HSV 检测彩色物体并映射到鼓垫
 - **低延迟音频** — Oboe 原生音频引擎（<40ms）或 SoundPool 降级方案
+- **本地自定义音色** — 复制当前套鼓后，为五个鼓垫分别导入 WAV，支持重命名、切换和删除
 - **三档性能** — 高/中/低性能档位，适配不同机型
+
+### 导入自己的鼓声
+
+打开“设置 → 音色”，先复制当前音色，再为 Kick、Snare、Clap、Tom、Hi-Hat
+选择对应 WAV。支持 PCM 16 位、单/双声道、8–96 kHz；单文件不超过 10 MiB、
+最长 5 秒。文件会规范化后保存在应用私有目录，不依赖网络或原始文件位置。
 
 ## 系统要求
 
@@ -26,7 +33,7 @@ AR 桌面鼓机 — 用手机摄像头识别桌面上的彩色物体和手部动
 | 手部追踪 | MediaPipe Tasks Vision (HandLandmarker) |
 | 颜色检测 | OpenCV 4.x (HSV + 连通域) |
 | 音频引擎 | Oboe (AAudio) → SoundPool 降级 |
-| 持久化 | DataStore Preferences + kotlinx.serialization |
+| 持久化 | Room 音色库 + DataStore Preferences + kotlinx.serialization |
 | 构建 | Gradle KTS + Version Catalog |
 
 ## 项目结构
@@ -91,7 +98,7 @@ keystore、密码文件与 alias 路径后运行：
 bash scripts/prepare_release.sh \
   app/build/outputs/apk/release/app-release.apk \
   release-dist \
-  v0.1.0-m9
+  v0.1.0-m10
 ```
 
 GitHub Actions Release 作业需要配置以下 Repository Secrets：
@@ -101,7 +108,7 @@ GitHub Actions Release 作业需要配置以下 Repository Secrets：
 - `ANDROID_RELEASE_KEY_ALIAS`
 - `ANDROID_RELEASE_KEY_PASSWORD`
 
-推送与 APK `versionName` 一致的标签（如 `v0.1.0-m9`）后，工作流会自动完成签名、
+推送与 APK `versionName` 一致的标签（如 `v0.1.0-m10`）后，工作流会自动完成签名、
 证书/版本校验、SHA-256 生成，并创建普通公开 GitHub Release。内测里程碑不标记为
 Latest；进入稳定期后再加入三档设备验收硬门禁。正式 keystore 一旦用于分发，后续
 覆盖升级必须持续使用同一证书，并在加密离线位置保留至少一份备份。
