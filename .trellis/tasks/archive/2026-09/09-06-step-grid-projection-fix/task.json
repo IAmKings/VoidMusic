@@ -1,0 +1,32 @@
+{
+  "id": "step-grid-projection-fix",
+  "name": "step-grid-projection-fix",
+  "title": "修复步进序列网格投影与校准流程",
+  "description": "修复签名 Release 中步进模式无法生成和保存 4×16 网格的问题，并补齐未校准保护与真机回归。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "kuluoluo",
+  "assignee": "kuluoluo",
+  "createdAt": "2026-09-06",
+  "completedAt": "2026-09-07",
+  "branch": "codex/step-grid-projection-fix",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "app/src/main/java/com/electrodig/voidmusic/detection/grid/GridProjection.kt",
+    "app/src/main/java/com/electrodig/voidmusic/detection/grid/GridScanner.kt",
+    "app/src/main/java/com/electrodig/voidmusic/ui/components/CalibrationOverlay.kt",
+    "app/src/main/java/com/electrodig/voidmusic/ui/components/StepSequencerOverlay.kt",
+    "app/src/main/java/com/electrodig/voidmusic/ui/screens/MainScreen.kt"
+  ],
+  "notes": "",
+  "meta": {}
+}
