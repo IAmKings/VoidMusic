@@ -72,8 +72,8 @@ android {
         applicationId = "com.electrodig.voidmusic"
         minSdk = 26          // PRD: Android 8.0 (API 26)+
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.0-m9"
+        versionCode = 5
+        versionName = "0.1.0-m10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -165,6 +165,15 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
+}
+
+kapt {
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+        arg("room.incremental", "true")
     }
 }
 

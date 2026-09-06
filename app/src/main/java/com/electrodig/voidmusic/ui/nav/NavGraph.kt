@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.electrodig.voidmusic.session.SessionViewModel
 import com.electrodig.voidmusic.ui.screens.MainScreen
 import com.electrodig.voidmusic.ui.screens.OnboardingScreen
 import com.electrodig.voidmusic.ui.screens.SettingsScreen
@@ -15,6 +16,7 @@ import com.electrodig.voidmusic.ui.screens.SettingsScreen
 @Composable
 fun VoidMusicNavHost(
     startRoute: String,
+    viewModel: SessionViewModel,
     onOnboardingComplete: () -> Unit
 ) {
     val nav = rememberNavController()
@@ -31,10 +33,14 @@ fun VoidMusicNavHost(
             })
         }
         composable(Destination.Main.route) {
-            MainScreen(onOpenSettings = { nav.navigate(Destination.Settings.route) })
+            MainScreen(
+                viewModel = viewModel,
+                onOpenSettings = { nav.navigate(Destination.Settings.route) }
+            )
         }
         composable(Destination.Settings.route) {
             SettingsScreen(
+                viewModel = viewModel,
                 onBack = { nav.popBackStack() },
                 onOpenGuide = {
                     nav.navigate(Destination.Onboarding.route) { launchSingleTop = true }

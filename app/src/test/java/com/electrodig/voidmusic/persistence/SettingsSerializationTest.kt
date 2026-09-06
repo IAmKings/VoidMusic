@@ -75,4 +75,37 @@ class SettingsSerializationTest {
         assertEquals(150L, migrated.hitCooldownMs)
         assertEquals(CURRENT_HIT_TUNING_VERSION, migrated.hitTuningVersion)
     }
+
+    @Test
+    fun `legacy built-in kit indexes migrate to stable ids`() {
+        val defaultKit = json.decodeFromString<Settings>("""{"activeKitIndex":0}""")
+            .withCurrentMigrations()
+        val electroKit = json.decodeFromString<Settings>("""{"activeKitIndex":1}""")
+            .withCurrentMigrations()
+
+        assertEquals("default", defaultKit.activeKitId)
+        assertEquals("electro", electroKit.activeKitId)
+        assertEquals(CURRENT_KIT_SELECTION_VERSION, defaultKit.kitSelectionVersion)
+        assertEquals(CURRENT_KIT_SELECTION_VERSION, electroKit.kitSelectionVersion)
+    }
+
+    @Test
+    fun `invalid legacy kit index falls back to default`() {
+        val migrated = Settings(activeKitIndex = 42).withCurrentMigrations()
+
+        assertEquals("default", migrated.activeKitId)
+        assertEquals(CURRENT_KIT_SELECTION_VERSION, migrated.kitSelectionVersion)
+    }
+
+    @Test
+    fun `current stable kit selection migration is idempotent`() {
+        val current = Settings(
+            activeKitIndex = 0,
+            activeKitId = "user-kit-1",
+            kitSelectionVersion = CURRENT_KIT_SELECTION_VERSION,
+            hitTuningVersion = CURRENT_HIT_TUNING_VERSION
+        )
+
+        assertSame(current, current.withCurrentMigrations())
+    }
 }
