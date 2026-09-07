@@ -1,218 +1,173 @@
+<div align="center">
+
 # Void Music
 
-AR 桌面鼓机 — 用手机摄像头识别桌面上的彩色物体和手部动作，实时触发鼓声。纯本地处理，无需网络。
+**让桌面上的彩色物品变成可以真实演奏的鼓垫。**
 
-## 功能
+Void Music 是一款纯本地运行的 Android AR 桌面鼓机。它通过摄像头识别彩色物品与手部动作，实时触发鼓声，也可以在取景画面上编排 4×16 步进节奏。
 
-- **实时击打模式** — 手指点击彩色物体触发对应鼓声（底鼓/军鼓/拍手/嗵鼓/踩镲）
-- **AR 步进序列器** — 在纸上画 4×16 网格，手指点击格子编排节奏循环
-- **手部追踪** — MediaPipe HandLandmarker 实时追踪指尖位置
-- **颜色分割** — OpenCV HSV 检测彩色物体并映射到鼓垫
-- **低延迟音频** — Oboe 原生音频引擎（<40ms）或 SoundPool 降级方案
-- **本地自定义音色** — 复制当前套鼓后，为五个鼓垫分别导入 WAV，支持重命名、切换和删除
-- **三档性能** — 高/中/低性能档位，适配不同机型
+[![Android Build & Release](https://github.com/IAmKings/VoidMusic/actions/workflows/android.yml/badge.svg)](https://github.com/IAmKings/VoidMusic/actions/workflows/android.yml)
+[![Release](https://img.shields.io/badge/release-v0.1.0--m11-ff6434)](https://github.com/IAmKings/VoidMusic/releases/tag/v0.1.0-m11)
+![Android](https://img.shields.io/badge/Android-8.0%2B-3ddc84?logo=android&logoColor=white)
+![Offline](https://img.shields.io/badge/processing-100%25_local-65558f)
+
+[下载 v0.1.0-m11](https://github.com/IAmKings/VoidMusic/releases/tag/v0.1.0-m11) · [查看构建状态](https://github.com/IAmKings/VoidMusic/actions)
+
+</div>
+
+## 实机界面
+
+<table>
+  <tr>
+    <td align="center"><img src="screen/实时击打-识别.jpg" alt="识别桌面上的彩色物品" width="280"><br><sub>彩色物品识别</sub></td>
+    <td align="center"><img src="screen/实时击打-击打.jpg" alt="手部追踪并触发鼓声" width="280"><br><sub>实时手部击打</sub></td>
+    <td align="center"><img src="screen/实时击打-识别设置.jpg" alt="使用取景器调整颜色识别范围" width="280"><br><sub>取色与 HSV 调节</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screen/步进序列.jpg" alt="四行十六步 AR 步进序列器" width="280"><br><sub>4×16 AR 步进序列</sub></td>
+    <td align="center"><img src="screen/设置-1.jpg" alt="音色库与自定义 WAV 导入" width="280"><br><sub>音色库与 WAV 导入</sub></td>
+    <td align="center"><img src="screen/设置-2.jpg" alt="击打灵敏度、复位时间和手部平滑设置" width="280"><br><sub>演奏参数设置</sub></td>
+  </tr>
+</table>
+
+## 功能亮点
+
+- **实时击打**：识别桌面上的红、蓝、绿、黄物品，并将手指击打映射为 Kick、Snare、Clap 和 Tom。
+- **手部追踪**：使用 MediaPipe 实时追踪手部关键点；画面平滑与击打判定采用独立数据路径，兼顾视觉稳定和触发速度。
+- **AR 步进序列**：在取景画面中校准演奏区域，使用 4×16 网格编排 Kick、Snare、Clap、Hi-Hat，并可调节 BPM、播放或清空序列。
+- **识别调参**：支持直接从取景器取色，也可以分别调整 H、S、V 范围，适应不同光照和物品颜色。
+- **自定义音色库**：内置两套音色；复制音色后可重命名，并分别为五个鼓垫导入 WAV 文件。
+- **低延迟音频**：优先使用 Oboe/AAudio 原生音频引擎，无法启用时自动回退到 SoundPool。
+- **设备适配**：提供高、中、低三档性能配置，并在省电或过热场景自动降低分析负载。
+- **隐私优先**：不申请网络权限，摄像头画面、识别结果与自定义音色均保存在本机。
+
+## 快速开始
+
+1. 从 [Releases](https://github.com/IAmKings/VoidMusic/releases/tag/v0.1.0-m11) 下载 `arm64-v8a` APK 并完成安装。
+2. 首次启动时阅读使用引导并授予摄像头权限；完成后，引导页不会在每次启动时重复出现。
+3. 将高饱和度的红、蓝、绿、黄物品放在光线均匀、背景对比明显的桌面上。
+4. 进入“实时击打”，等待物品边框和手部骨架稳定出现，然后用指尖快速敲击对应物品。
+5. 如果识别不稳定，打开右侧调参面板，选择颜色后使用“从取景器取色”或手动微调 HSV 范围。
+
+### 使用步进序列
+
+1. 切换到“步进序列”，按界面提示依次标定演奏区域的四个角。
+2. 在投影出的 4×16 网格中开启需要的节拍；四行分别对应 Kick、Snare、Clap、Hi-Hat。
+3. 调整 BPM 后点击播放。播放指示线会随节拍移动，再次点击可暂停，垃圾桶按钮可清空序列。
 
 ### 导入自己的鼓声
 
-打开“设置 → 音色”，先复制当前音色，再为 Kick、Snare、Clap、Tom、Hi-Hat
-选择对应 WAV。支持 PCM 16 位、单/双声道、8–96 kHz；单文件不超过 10 MiB、
-最长 5 秒。文件会规范化后保存在应用私有目录，不依赖网络或原始文件位置。
+打开“设置 → 音色”，复制当前音色，然后为 Kick、Snare、Clap、Tom、Hi-Hat 分别选择 WAV 文件。导入文件需要满足：
+
+- PCM 16 位 WAV
+- 单声道或双声道
+- 8–96 kHz 采样率
+- 单文件不超过 10 MiB、时长不超过 5 秒
+
+音频会在导入时完成校验与规范化，并复制到应用私有目录；之后播放不依赖原文件位置或网络。
+
+## 当前版本
+
+当前发布版本为 **v0.1.0-m11**（`versionCode 6`）。该版本已完成真机上的彩色物品识别、连续击打、跨颜色快速切换、扬声器与蓝牙耳机播放，以及步进网格投影验证。
+
+正式稳定版发布前仍计划补齐高、中、低三档设备的 20 分钟持续演奏、温升、后台恢复和完整性能数据验证。因此当前版本适合体验与功能验证，不建议直接用于演出等关键场景。
 
 ## 系统要求
 
-- Android 8.0 (API 26) 及以上
+- Android 8.0（API 26）及以上
 - 后置摄像头
-- 推荐 arm64-v8a 设备（骁龙 6 系及以上）
+- 当前公开 Release APK 面向 `arm64-v8a` 设备
+- 建议使用光线稳定、背景简洁的桌面环境
 
-## 技术栈
+> 蓝牙音频延迟由手机、系统和耳机共同决定；追求最低演奏延迟时，建议优先使用手机扬声器或有线音频设备。
+
+## 技术架构
+
+> 维护者可阅读 [《Void Music 技术原理》](docs/TECHNICAL_PRINCIPLES.md)，了解颜色分割、手部双路径、击打判定、透视网格、音频回退和生命周期设计。
 
 | 模块 | 技术 |
-|------|------|
+|---|---|
 | UI | Jetpack Compose + Material 3 |
-| 相机 | CameraX (Preview + ImageAnalysis) |
-| 手部追踪 | MediaPipe Tasks Vision (HandLandmarker) |
-| 颜色检测 | OpenCV 4.x (HSV + 连通域) |
-| 音频引擎 | Oboe (AAudio) → SoundPool 降级 |
-| 持久化 | Room 音色库 + DataStore Preferences + kotlinx.serialization |
-| 构建 | Gradle KTS + Version Catalog |
+| 相机 | CameraX（Preview + ImageAnalysis） |
+| 手部追踪 | MediaPipe Tasks Vision / HandLandmarker |
+| 颜色识别 | OpenCV 4.x / HSV 分割与连通区域检测 |
+| 音频 | Oboe（AAudio）→ SoundPool 降级 |
+| 音色与设置 | Room + DataStore + kotlinx.serialization |
+| 构建 | Gradle Kotlin DSL + Version Catalog |
+
+核心实时链路：
+
+```text
+CameraX 帧
+  ├─ MediaPipe 手部关键点 ── 原始轨迹 ── 击打检测 ── 鼓区仲裁 ── 音频引擎
+  │                       └─ 平滑轨迹 ── 手部骨架叠加
+  └─ OpenCV HSV 分割 ────── 彩色物品鼓区缓存 ────────┘
+```
+
+颜色识别会降低执行频率并缓存鼓区，手部与击打路径继续按实时帧更新，从而减少 OpenCV 对演奏响应的影响。相机预览、识别结果和点击坐标统一映射到屏幕坐标系，设备旋转后也会同步更新。
 
 ## 项目结构
 
-```
+```text
 app/src/main/java/com/electrodig/voidmusic/
-├── audio/          # 音频引擎 (Oboe JNI / SoundPool / WAV解码 / Transport时钟)
-├── camera/         # CameraX 封装 (取景器 / 帧路由)
+├── audio/          # Oboe JNI、SoundPool、WAV 解码与节拍时钟
+├── camera/         # CameraX、帧路由与坐标映射
 ├── detection/
-│   ├── color/      # OpenCV HSV 颜色分割
-│   ├── grid/       # 透视网格 / 序列器状态
+│   ├── color/      # HSV 颜色分割与取色
+│   ├── grid/       # 透视校准与步进序列
 │   ├── hand/       # MediaPipe 手部追踪
-│   └── hit/        # 击打检测 / 仲裁 / 鼓垫追踪
-├── persistence/    # 设置持久化 & 性能档位配置
-├── session/        # ViewModel & UI 状态
-└── ui/
-    ├── screens/    # 主屏幕 / 设置 / 引导
-    ├── components/ # HUD / 叠加层 / 控件
-    └── theme/      # Material 3 主题
-app/src/main/cpp/   # Oboe 原生音频 (CMake)
+│   └── hit/        # 击打检测、鼓区追踪与触发仲裁
+├── persistence/    # Room 音色库与 DataStore 设置
+├── session/        # 会话状态与 ViewModel
+└── ui/             # Compose 页面、组件与主题
+app/src/main/cpp/   # Oboe 原生音频引擎
 app/src/main/assets/ # MediaPipe 模型
-app/src/main/res/   # 资源 (鼓声样本 / 图标)
+app/src/main/res/   # 内置鼓声与 Android 资源
 ```
 
-## 构建
+## 本地构建
 
-### 前置条件
+### 环境
 
-- Android Studio Meerkat (2024.3+) 或更高
-- JDK 21 (随 Android Studio 内置)
-- 如需原生音频：SDK Manager 安装 NDK 27.2.12479018
+- Android Studio 当前稳定版
+- JDK 17
+- Android SDK 35 / Build Tools 35.0.0
+- NDK 27.2.12479018 与 CMake 3.22.1（启用 Oboe 时）
 
-### 命令
+### 常用命令
 
 ```bash
-# Debug 构建 (含所有 ABI，适合模拟器测试)
+# Debug APK
 ./gradlew assembleDebug
 
-# Release 构建 (仅 arm64-v8a，APK ~44MB)
-./gradlew assembleRelease
-
-# 运行单元测试
-./gradlew testDebugUnitTest
-```
-
-### 启用原生音频 (Oboe)
-
-在 `gradle.properties` 中设置：
-```properties
-enableNativeBuild=true
-```
-需先通过 SDK Manager 安装 NDK 27.2.12479018。未启用时自动使用 SoundPool 降级方案。
-
-### 签名 Release 与自动发布
-
-Release 构建必须提供专用签名，不会回退生成可误传的 unsigned 候选包。本地复制
-`keystore.properties.example` 为未跟踪的 `keystore.properties`，填写仓库外的
-keystore、密码文件与 alias 路径后运行：
-
-```bash
+# 包含 Oboe 的 Release APK
 ./gradlew -PenableNativeBuild=true assembleRelease
-bash scripts/prepare_release.sh \
-  app/build/outputs/apk/release/app-release.apk \
-  release-dist \
-  v0.1.0-m10
+
+# 单元测试与 Lint
+./gradlew testDebugUnitTest lintDebug
 ```
 
-GitHub Actions Release 作业需要配置以下 Repository Secrets：
+将 `enableNativeBuild` 设为 `false` 可以跳过 JNI/Oboe 构建，应用会使用 SoundPool 降级路径。
+
+## 自动发布
+
+推送与 `versionName` 一致的标签（例如 `v0.1.0-m11`）后，[Android Build & Release](https://github.com/IAmKings/VoidMusic/actions/workflows/android.yml) 会自动执行测试、Lint、原生构建、Release 签名、证书与版本校验，并发布 APK、`SHA256SUMS` 和构建信息。
+
+仓库需要配置以下 GitHub Actions Secrets：
 
 - `ANDROID_RELEASE_KEYSTORE_BASE64`
 - `ANDROID_RELEASE_STORE_PASSWORD`
 - `ANDROID_RELEASE_KEY_ALIAS`
 - `ANDROID_RELEASE_KEY_PASSWORD`
 
-推送与 APK `versionName` 一致的标签（如 `v0.1.0-m10`）后，工作流会自动完成签名、
-证书/版本校验、SHA-256 生成，并创建普通公开 GitHub Release。内测里程碑不标记为
-Latest；进入稳定期后再加入三档设备验收硬门禁。正式 keystore 一旦用于分发，后续
-覆盖升级必须持续使用同一证书，并在加密离线位置保留至少一份备份。
-
-## 性能档位
-
-| 档位 | 相机分辨率 | 分析帧率 | MediaPipe | 手部数 | 降采样 |
-|------|-----------|---------|-----------|-------|--------|
-| HIGH | 640×480 | 30 FPS | GPU | 2 | 1x |
-| MEDIUM | 640×480 | 20 FPS | GPU | 2 | 0.5x |
-| LOW | 480×360 | 15 FPS | CPU | 1 | 0.25x |
-
-省电模式或设备过热时自动切换至 LOW 档位。
-
-> 分析分辨率只需略大于模型输入（192×192 / 224×224），过高分辨率浪费拷贝/旋转/推理带宽。预览取景器走独立 Preview use case 保持清晰。
-
----
-
-## 技术原理
-
-### 整体数据流
-
-```
-CameraX ImageAnalysis (传感器原生方向, rotationDegrees=D)
-  → FrameRouter.analyze [单线程后台, STRATEGY_KEEP_ONLY_LATEST]
-    → image.toBitmap()                        [RGBA, 传感器空间, 不旋转]
-    → rotateBitmapForDisplay(raw, D)          [→ 屏幕方向; 0° 零开销]
-    → consumer[0] HandTracker.detectAsync()   [异步, 不阻塞]
-    → consumer[1] ColorSegmenter.segment()   [同步 OpenCV, 每 3 帧]
-  → MediaPipe 异步回调
-    → OneEuroHandStabilizer.smooth()          [低通滤波: 平滑 → overlay]
-    → _hands (平滑) / _rawHands (原始)        [双 StateFlow]
-  → Compose collectAsState → HandOverlay Canvas 重绘
-```
-
-### 物体识别（HSV 颜色分割）
-
-**管线**：`Bitmap → BGR Mat → HSV → inRange 阈值 → 形态学开闭 → findContours → 面积/长宽比过滤 → DrumZone`
-
-**HSV 预设**（OpenCV H∈0..180, S/V∈0..255）：
-
-| 预设 | H 范围 | S 最低 | V 最低 | 鼓垫 | 说明 |
-|------|--------|-------|--------|------|------|
-| 红 | 160~8 (wrap) | 100 | 50 | KICK | 跨 0/180 边界，wrap 拼接 160..180 + 0..8 两段 |
-| 蓝 | 95~130 | 80 | 50 | SNARE | 纯蓝范围 |
-| 绿 | 45~85 | 80 | 50 | CLAP | 两侧与黄(35)/蓝(95)留间隙 |
-| 黄 | 22~35 | 80 | 50 | TOM | 窄范围，集中在标准黄色 H≈28 |
-
-**红色 hue wrap 处理**：红色横跨 HSV 色相环的 0/180 边界。当 `hMin > hMax` 时，`ColorSegmenter.threshold` 拼接两段 `inRange`：
-- 段 1：`H = hMin..180`（如 160..180，品红/暗红侧）
-- 段 2：`H = 0..hMax`（如 0..8，纯红侧）
-- 两段 `bitwise_or` 合并
-
-**肤色过滤**：
-- S 门槛 100（红色）/80（其他）：肤色 S 通常 50~90，被滤除
-- minAreaFraction 0.001：手部关节/指甲等小色斑面积不够被滤除
-
-**降频优化**：ColorSegmenter 每 3 帧执行一次（物件空间变化慢），hit 检测每帧执行用缓存 zones，避免 OpenCV 阻塞 hand 路径导致 FPS 下降。
-
-### 手部识别（MediaPipe HandLandmarker）
-
-**模型**：`hand_landmarker.task`（7.8MB，含两个 TFLite）
-- `hand_detector.tflite` — 输入 192×192，检测手部位置
-- `hand_landmarks_detector.tflite` — 输入 224×224，输出 21 个关键点
-
-**运行模式**：`LIVE_STREAM` + `detectAsync`，GPU 优先（Delegate.GPU），失败降级 CPU。
-
-**坐标系**：归一化 [0,1] 相对旋转后 bitmap（屏幕方向），x=水平、y=垂直。
-
-**双路径输出**（关键设计）：
-- `hands`（平滑）→ overlay 叠加层：OneEuro 低通滤波，骨架稳定不抖
-- `rawHands`（原始）→ hit 检测：未经滤波，保留 tap 瞬间位移尖峰
-
-> 为什么分离？OneEuro 滤波器为 overlay 稳定而设计，但会削平 tap 的瞬间高速位移。如果 hit 路径也用平滑值，tap 速度被稀释到阈值以下，永远触发不了。分离后两条路径各取所需：overlay 要稳，hit 要快。
-
-### tap 触发检测
-
-**HitDetector** — 从指尖轨迹检测 tap 手势：
-
-- **位移阈值**（非速度）：用 window 峰值位移 `max(hypot(Δx, Δy))`，阈值 0.03（归一化单位，~3% 帧宽）
-- **峰值提取**（非平均）：tap 只占 1 帧，平均会被相邻静默帧稀释；取 window 内最大 inter-frame 位移
-- **任意方向**：合速度 `hypot(dx, dy)`，适配俯视/侧视/斜视各角度（原来只认正 Y 向下，侧视横向 tap 无法触发）
-- **低帧率鲁棒**：位移与 dt 无关，11 FPS 和 30 FPS 下同样的 tap 位移都能触发（速度 = 位移/dt 会被长 dt 稀释）
-
-**HitArbiter** — 将候选映射到鼓区：
-- `PadTracker.locate` — box 容差 0.12 + 中心吸引半径 0.15，匹配 fingertip 到最近 zone
-- `retriggerCooldownMs = 90ms` — 同一 zone 重复触发冷却
-- `mapVelocity` — 位移→0..1 增益，软饱和
-
-### 相机旋转处理
-
-`ImageProxy.toBitmap()` 返回**传感器原生方向** bitmap（不旋转）。`FrameRouter` 统一按 `imageInfo.rotationDegrees` 旋转后分发，所有下游消费者共享屏幕坐标系。
-
-`CameraModule` 保留 Preview/ImageAnalysis 引用，`updateTargetRotation()` 在设备旋转时（`DisplayManager.DisplayListener`）同步 use case 的 `targetRotation`，无需重绑。
-
-### 相机绑定（响应式）
-
-`camera` 和 `handTracker` 以 `settings.performanceLevel` 为 remember key。settings 从 DataStore 异步加载，可能导致实例重建。绑定改为 `LaunchedEffect(camera, lifecycleOwner, previewView)` 响应式：实例重建时自动 unbind 旧的 + 重绑新的，避免"绑定的相机"与"被收集的 tracker"是两个不同实例。
+本地签名配置请参考 `keystore.properties.example`。用于公开分发的 keystore 必须长期保留；后续覆盖安装需要使用同一签名证书。
 
 ## 隐私
 
 - 不申请 `INTERNET` 权限
-- 摄像头画面不写入磁盘、不上传
-- 所有处理（视觉识别 + 音频）均在本地完成
+- 摄像头画面不会写入磁盘或上传
+- 视觉识别、节拍生成和音频播放全部在本机完成
+- 导入的 WAV 文件存储在应用私有目录
 
 ## License
 
