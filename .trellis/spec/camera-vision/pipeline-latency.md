@@ -14,13 +14,15 @@ CameraX ImageAnalysis (sensor space, rotationDegrees=D)
     → image.toBitmap()                    [RGBA, sensor space, NO rotation]
     → rotateBitmapForDisplay(raw, D)      [→ screen space; 0° short-circuits]
     → consumer[0] HandTracker.detectAsync [async, non-blocking]
-    → consumer[1] ColorSegmenter.segment  [SYNC, blocking OpenCV]
+    → consumer[1] LivePerformancePipeline [adaptive synchronous OpenCV]
     → recycle shared Bitmap + close ImageProxy exactly once
   → MediaPipe async callback
-    → OneEuroHandStabilizer.smooth        [low-pass filter: latency vs smoothness]
-    → _hands StateFlow
+    → raw TimestampedHands
+      ├─ direct TAP freshness/hit/audio path
+      └─ bounded queue for STEP cell toggles
+    → OneEuroHandStabilizer.smooth → hands StateFlow [overlay only]
     → close MediaPipe output MPImage
-  → Compose collectAsState → HandOverlay Canvas redraw
+  → LivePerformanceEvent / Compose overlay redraw
 ```
 
 ## Latency Budget (per frame @ 30fps target)
@@ -57,10 +59,10 @@ CameraX ImageAnalysis (sensor space, rotationDegrees=D)
 
 The stabilizer is a **low-pass filter**: it trades latency for smoothness.
 
-| Parameter | Effect of ↑ | Default | Tuning range |
+| Parameter | Effect of ↑ | Current default | Tuning range |
 |-----------|------------|---------|--------------|
-| `minCutoff` | less smoothing at rest, less lag | 1.5 | 1.5–4.0 |
-| `beta` | faster speed response, less lag when moving | 0.05 | 0.05–0.1 |
+| `minCutoff` | less smoothing at rest, less lag | 3.0 | 1.5–4.0 |
+| `beta` | faster speed response, less lag when moving | 0.07 | 0.02–0.1 |
 
 **Convention**: `minCutoff=1.5, beta=0.05` is too conservative for real-time
 skeleton overlay — causes visible "骨架不贴手" lag. For responsive overlay use
@@ -69,11 +71,11 @@ skeleton overlay — causes visible "骨架不贴手" lag. For responsive overla
 
 ### Camera Analysis Resolution vs Model Input
 
-| Perf level | Camera res | MediaPipe input | OpenCV downsample |
-|-----------|-----------|-----------------|-------------------|
-| HIGH | 1920×1080 | 192×192 / 224×224 | 1.0 (full) |
-| MEDIUM | 1280×720 | 192×192 / 224×224 | 0.5 |
-| LOW | 640×480 | 192×192 / 224×224 | 0.25 |
+| Perf level | Analysis res | Frame cap | Delegate | Max hands | OpenCV downsample |
+|-----------|--------------|-----------|----------|-----------|-------------------|
+| HIGH | 640×480 | 30 FPS | GPU | 2 | 1.0 |
+| MEDIUM | 640×480 | 24 FPS | GPU | 2 | 0.5 |
+| LOW | 480×360 | 15 FPS | CPU | 1 | 0.25 |
 
 **Gotcha**: Camera resolution far exceeds model input (192/224). Full-res
 bitmap is copied, rotated, and wrapped in `BitmapImageBuilder` only for
@@ -110,9 +112,9 @@ On the bundled OpenCV 4.13 binding, use `COLOR_RGB2HSV` directly on that
 retained Mat; do not create and recycle a scaled Bitmap on every segmentation.
 Reuse RGBA, scaled RGBA, HSV, hierarchy, contour-list, and threshold workspaces,
 and release every retained native object from `ColorSegmenter.close()`.
-`ColorSegmenter` is created during Compose composition before the
-`LaunchedEffect` that loads OpenCV, so all native `Mat` allocation must be lazy
-inside `segment()`.
+`LivePerformancePipeline.start()` must call `OpenCvLoader.ensureInitialised`
+before constructing `ColorSegmenter`. Retained `Mat` allocation also stays lazy
+inside `segment()` so construction and abandoned UI composition remain safe.
 
 ## Scenario: Frame Ownership and Adaptive Colour Segmentation
 
@@ -154,7 +156,7 @@ inside `segment()`.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: stable 30 FPS scene segments every fifth frame (about 167 ms), then an
+- Good: stable 30 FPS scene segments every sixth frame (about 200 ms), then an
   HSV change forces the next frame immediately.
 - Base: low-tier 15 FPS scene segments every frame while changing and every
   third frame when stable, leaving 60 ms scheduling margin below the 260 ms ceiling.
@@ -224,22 +226,21 @@ downstream consumer that assumes screen-space coordinates will be wrong.
 **Prevention**: The FrameRouter is the single rotation point — never assume
 sensor-space coordinates downstream.
 
-### Mistake: Camera bound once, tracker rebuilt later
+### Mistake: A stale asynchronous CameraX bind completes after stop/rebind
 
-**Symptom**: Hand tracking only appears after navigating to Settings and back.
+**Symptom**: A stopped or replaced pipeline unexpectedly rebinds the camera,
+or an old callback publishes `onBound(true)` after the current request failed.
 
-**Cause**: `camera` and `handTracker` are `remember(settings.performanceLevel)`.
-`settings` starts as `DEFAULT` then emits the persisted value later. If the
-persisted level ≠ default, both are rebuilt to instance #2, but the camera was
-already bound to instance #1 (whose tracker's StateFlow the UI doesn't
-collect).
+**Cause**: `ProcessCameraProvider.getInstance` completes asynchronously. A
+callback from an older `startPreview` request can arrive after `stopPreview`,
+another start, or final close.
 
-**Fix**: Bind the camera in a `LaunchedEffect(camera, lifecycleOwner,
-previewView)` that re-runs when `camera` changes, plus a
-`DisposableEffect(camera)` that `stop()`s the old instance.
+**Fix**: Every bind receives a `CameraBindingGate` generation. Check that
+generation before reading the provider, before binding, and before publishing
+the callback. `stopPreview` cancels pending generations; `close` is terminal.
 
-**Prevention**: Never bind camera in a one-shot AndroidView factory callback
-when the camera instance is keyed to mutable state.
+**Prevention**: Never trust an asynchronous bind callback without comparing it
+to the current lifecycle request.
 
 ### Mistake: Over-smoothing the skeleton overlay
 
@@ -357,7 +358,11 @@ val age = consumedAtMs - frame.timestampMs
 
 ## Validation
 
-- `./gradlew :app:testDebugUnitTest` — includes `FrameRouterTest`
-  (`normalisedRotationDegrees` boundary cases) and `OneEuroHandStabilizerTest`.
-- On-device: skeleton aligns with real hand in both portrait and landscape;
-  downward tap fires drum sound; cold start shows skeleton immediately.
+- `./gradlew -PenableNativeBuild=true :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`.
+- JVM coverage includes FrameRouter ownership/rotation, CameraBindingGate generations,
+  PreviewCoordinateMapper, cadence, metrics, smoothing, tracking, hit freshness,
+  same/cross-zone timing, and runtime constraints.
+- Instrumented coverage includes real OpenCV segmentation.
+- Signed device: skeleton aligns in portrait/landscape; same-colour and cross-colour
+  rhythm remains responsive; cold start and foreground/background cycles do not
+  resurrect stale camera bindings.

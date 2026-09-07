@@ -1,17 +1,16 @@
 # Android Release Signing and Publication
 
-> Contracts for producing a distributable Void Music APK without exposing or replacing its long-lived signing identity.
+> Executable contract for producing a distributable Void Music APK without exposing or replacing its long-lived identity.
 
-## Signing identity
+## Scenario: Build, validate, and publish a signed Release
 
-- Release APKs must use the dedicated `void-music-release` key. Debug keys and unsigned APKs are never release candidates.
-- The keystore and passwords live outside the repository. `*.jks`, `*.keystore`, and the root `keystore.properties` remain ignored.
-- The expected certificate SHA-256 is `D1:51:A2:61:C0:CB:73:86:F9:FF:8E:29:91:55:38:C3:7F:4C:88:0E:7F:28:8E:36:8B:90:FC:D3:DB:EC:ED:59`.
-- Once an APK is distributed, every upgrade must use the same certificate. Never regenerate or rotate the key as a routine build fix.
+### 1. Scope / Trigger
 
-## Gradle input contract
+Apply this contract when changing Gradle signing, versioning, ABI filters, R8 rules, native build inputs, release scripts, GitHub Actions, tags, or Release artifacts.
 
-Local builds use an untracked root `keystore.properties`. Passwords may be supplied directly or read from repository-external files:
+### 2. Signatures
+
+Local Gradle properties:
 
 ```properties
 storeFile=/secure/path/void-music-release.jks
@@ -20,35 +19,89 @@ keyAlias=void-music-release
 keyPasswordFile=/secure/path/release-password.txt
 ```
 
-CI uses `VOID_MUSIC_STORE_FILE`, `VOID_MUSIC_STORE_PASSWORD`, `VOID_MUSIC_KEY_ALIAS`, and `VOID_MUSIC_KEY_PASSWORD`. A Release task must fail before packaging if any field or the keystore is unavailable. Debug tasks must remain independent of signing inputs.
+CI environment consumed by Gradle:
 
-## GitHub Actions secret contract
+- `VOID_MUSIC_STORE_FILE`
+- `VOID_MUSIC_STORE_PASSWORD`
+- `VOID_MUSIC_KEY_ALIAS`
+- `VOID_MUSIC_KEY_PASSWORD`
 
-Only the Release job may read these repository Secrets:
+Repository Secrets consumed only by the Release job:
 
 - `ANDROID_RELEASE_KEYSTORE_BASE64`
 - `ANDROID_RELEASE_STORE_PASSWORD`
 - `ANDROID_RELEASE_KEY_ALIAS`
 - `ANDROID_RELEASE_KEY_PASSWORD`
 
-Decode the keystore only into the ephemeral Runner temp directory. Never echo secret values, upload the keystore, or cache its directory.
+Validation commands:
 
-## Publication contract
+```bash
+./gradlew -PenableNativeBuild=true :app:assembleRelease
+bash scripts/validate_release_shrinker.sh
+bash scripts/prepare_release.sh +  app/build/outputs/apk/release/app-release.apk +  release-dist +  v<VERSION_NAME>
+```
 
-- The tag is `v<APK versionName>` and must match the built APK exactly.
-- `scripts/prepare_release.sh` is the shared local/CI validator for APK signature, expected certificate, version metadata, checksum, and build information.
-- `scripts/validate_release_shrinker.sh` must verify the Flogger stack-inspection frames and protobuf-javalite generated fields in the Release R8 outputs before an artifact can be uploaded.
-- Keep Flogger's stack-inspection chain intact and retain fields on every `GeneratedMessageLite` subclass. Without these contracts, a minified APK can launch while MediaPipe hand tracking crashes or silently fails to initialize.
-- A tag run publishes a normal GitHub Release automatically. Milestone/internal-test releases are public but use `latest=false`; they are neither Draft nor Pre-release.
-- Manual workflow dispatch produces the verified Actions Artifact only and must not create a GitHub Release.
-- Stable-phase device acceptance gates are added before publication without weakening signing or metadata validation.
+### 3. Contracts
 
-## Quality check
+- Release APKs use the dedicated `void-music-release` PKCS12 key. Expected certificate SHA-256:
+  `D1:51:A2:61:C0:CB:73:86:F9:FF:8E:29:91:55:38:C3:7F:4C:88:0E:7F:28:8E:36:8B:90:FC:D3:DB:EC:ED:59`.
+- Debug uses application ID suffix `.debug` and its own signature. Debug and test tasks must not require Release secrets.
+- Keystore, password files, `keystore.properties`, decoded runner key, and `release-dist/` are never committed or uploaded as cache.
+- `preReleaseBuild` depends on `validateReleaseSigningInputs` and fails if any value or keystore file is absent. Never emit an unsigned Release candidate.
+- Release enables R8/resource shrinking and packages only `arm64-v8a`. Native build uses NDK `27.2.12479018`, CMake `3.22.1`, and shared libc++.
+- Keep JNI declarations, MediaPipe, Flogger stack-inspection frames, and `GeneratedMessageLite` fields according to `proguard-rules.pro`.
+- Tag must be exactly `v<APK versionName>`. `prepare_release.sh` verifies signature, expected certificate, package/version metadata, checksum, and build information.
+- `validate_release_shrinker.sh` verifies required Flogger/protobuf rules against generated R8 outputs.
+- Push/PR to master runs Debug verification. Tag or manual dispatch runs signed Release creation. Only a tag publishes GitHub Release; manual dispatch uploads a verified Actions Artifact.
+- Published milestone releases are public, not Draft or Pre-release, and use `latest=false` until stable-phase device gates are enabled.
+- Never rotate the signing key as a build fix. Every distributed upgrade must use the same certificate, with encrypted offline backup.
 
-- Run Debug unit tests, Lint, and native Debug build without signing inputs.
-- Prove a Release lifecycle task fails cleanly when signing inputs are absent.
-- Build a signed Release and run `scripts/prepare_release.sh` with the expected tag.
-- Run `scripts/validate_release_shrinker.sh` against the generated Release mapping and seeds.
-- Install the minified signed APK on a physical device and verify MediaPipe initialization, hand tracking, audio triggering, and background recovery; a build-only check cannot cover reflection/stack-inspection failures.
-- Verify no keystore, password file, `keystore.properties`, or generated release directory is tracked.
-- Ensure all four Gradle environment names and all four GitHub Secret names match across Gradle, workflow, README, and this spec.
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Any signing value missing | fail before Release packaging and name missing field |
+| Keystore path missing | fail `validateReleaseSigningInputs` |
+| Debug build without secrets | succeed independently |
+| Native build disabled for publication | reject release procedure |
+| APK certificate mismatch | `prepare_release.sh` fails; upload/publish does not run |
+| Tag/versionName mismatch | validator fails; no GitHub Release |
+| Required R8 contract absent | shrinker validator fails |
+| Tag already has a Release | edit metadata and upload assets with clobber |
+| Manual dispatch | create signed artifact only; no GitHub Release |
+| Missing GitHub keystore secret | fail without echoing secret |
+
+### 5. Good / Base / Bad Cases
+
+- Good: bump versionCode/versionName, locally validate a signed native Release, commit, tag `v<versionName>`, push master and tag, then verify the published checksum.
+- Base: a pull request runs unit tests, Lint, and native Debug with no signing inputs.
+- Bad: use the debug key, accept unsigned output, decode the keystore inside the workspace, print secret environment values, or create a tag that differs from APK metadata.
+
+### 6. Tests Required
+
+- Shell syntax-check both release scripts.
+- Run Debug unit tests, Lint, and native Debug without signing inputs.
+- Prove a Release task fails cleanly when signing inputs are absent.
+- Build signed Release; verify APK signature/certificate/version/checksum/build-info and shrinker outputs.
+- Check tracked files for keystore/password/release artifacts.
+- Signed physical-device: cold start, MediaPipe initialization under R8, hand tracking, colour hit/audio, step playback, imported kit, route change, and background recovery.
+- Before stable publication, complete high/mid/low device FPS, segmentation, hit-to-sound latency, 20-minute stability, temperature, and background restore gates.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```yaml
+- run: ./gradlew assembleRelease || cp app-debug.apk release.apk
+- run: echo "$ANDROID_RELEASE_STORE_PASSWORD"
+```
+
+#### Correct
+
+```yaml
+- run: ./gradlew -PenableNativeBuild=true :app:assembleRelease
+- run: bash scripts/validate_release_shrinker.sh
+- run: bash scripts/prepare_release.sh app-release.apk release-dist "$GITHUB_REF_NAME"
+```
+
+The correct pipeline is fail-closed: no valid signing identity, native build, shrinker proof, or matching tag means no public artifact.
